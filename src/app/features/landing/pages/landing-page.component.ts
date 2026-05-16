@@ -20,7 +20,7 @@ import { RouterLink } from '@angular/router';
               </h1>
 
               <p class="mt-4 max-w-2xl text-lg text-slate-600">
-                Importa un ordine, confronta i listini dei fornitori e genera i file finali pronti per l’invio.
+                Importa un ordine, confronta i listini dei fornitori e genera i file finali pronti per l'invio.
               </p>
 
               <div class="mt-8 flex flex-col gap-3 sm:flex-row">
@@ -32,15 +32,15 @@ import { RouterLink } from '@angular/router';
                 </a>
 
                 <a
-                  routerLink="/app/orders"
+                  routerLink="/login"
                   class="inline-flex items-center justify-center rounded-xl border border-slate-300 bg-white px-5 py-3 font-medium text-slate-700 transition hover:bg-slate-50"
                 >
-                  Vai agli ordini
+                  Vai al login
                 </a>
               </div>
 
               <p class="mt-6 max-w-2xl text-sm leading-6 text-slate-500">
-                Frontend Angular V0 collegato al backend già deployato. Nessuna business logic duplicata nel frontend.
+                Frontend Angular collegato a backend NestJS multi-tenant con autenticazione Supabase Auth.
               </p>
             </div>
           </div>
@@ -82,7 +82,7 @@ import { RouterLink } from '@angular/router';
                 </span>
                 <h3 class="mt-4 text-lg font-semibold text-slate-950">Carica file fornitori</h3>
                 <p class="mt-2 text-sm leading-6 text-slate-600">
-                  Gestisci più fornitori con card semplici generate da configurazione locale.
+                  Gestisci i fornitori reali del tenant con card semplici collegate al backend.
                 </p>
               </article>
 
@@ -92,7 +92,7 @@ import { RouterLink } from '@angular/router';
                 </span>
                 <h3 class="mt-4 text-lg font-semibold text-slate-950">Esporta ordini</h3>
                 <p class="mt-2 text-sm leading-6 text-slate-600">
-                  Genera i file finali pronti per l’invio con l’esito restituito dal backend.
+                  Genera i file finali pronti per l'invio con l'esito restituito dal backend.
                 </p>
               </article>
             </div>

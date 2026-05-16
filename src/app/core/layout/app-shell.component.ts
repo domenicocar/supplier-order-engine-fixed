@@ -1,5 +1,8 @@
-import { ChangeDetectionStrategy, Component } from '@angular/core';
-import { RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
+import { ChangeDetectionStrategy, Component, inject } from '@angular/core';
+import { Router, RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
+
+import { AuthService } from '../../features/auth/services/auth.service';
+import { AuthStore } from '../../features/auth/stores/auth.store';
 
 @Component({
   selector: 'app-shell',
@@ -43,14 +46,41 @@ import { RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
               Ordini
             </a>
           </nav>
+
+          <div class="flex items-center gap-3">
+            @if (authStore.user(); as user) {
+              <span class="text-sm text-slate-500">{{ user.email }}</span>
+            }
+            <button
+              type="button"
+              class="rounded-full border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+              (click)="signOut()"
+            >
+              Logout
+            </button>
+          </div>
         </div>
       </header>
 
       <main class="mx-auto max-w-[95rem] px-4 py-8 sm:px-6 lg:px-8">
+        @if (authStore.suspendedMessage(); as suspendedMessage) {
+          <div class="mb-6 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+            {{ suspendedMessage }}
+          </div>
+        }
         <router-outlet />
       </main>
     </div>
   `,
   changeDetection: ChangeDetectionStrategy.OnPush
 })
-export class AppShellComponent {}
+export class AppShellComponent {
+  readonly authStore = inject(AuthStore);
+  private readonly authService = inject(AuthService);
+  private readonly router = inject(Router);
+
+  async signOut(): Promise<void> {
+    await this.authService.signOut();
+    await this.router.navigate(['/login']);
+  }
+}

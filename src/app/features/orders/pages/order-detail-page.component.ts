@@ -24,6 +24,7 @@ import {
 import { SupplierDefinition } from '../../../models/supplier.models';
 import { OrdersSessionStore } from '../../../services/orders-session.store';
 import { OrdersService } from '../../../services/orders.service';
+import { SuppliersService } from '../../../services/suppliers.service';
 import { OrderExportTabComponent } from '../components/order-export-tab.component';
 import {
   OrderExportOverview,
@@ -207,6 +208,7 @@ export class OrderDetailPageComponent {
   private readonly destroyRef = inject(DestroyRef);
   private readonly ordersStore = inject(OrdersSessionStore);
   private readonly ordersService = inject(OrdersService);
+  private readonly suppliersService = inject(SuppliersService);
 
   readonly activeTab = signal<'import' | 'products' | 'comparison' | 'export'>('import');
   readonly orderLoading = signal(false);
@@ -226,6 +228,9 @@ export class OrderDetailPageComponent {
   readonly supplierLoadingState = signal<Record<string, boolean>>({});
   readonly supplierUploadState = signal<Record<string, UploadCardState>>({});
   readonly fetchedOrderIds = signal<Record<string, boolean>>({});
+  readonly loadedSuppliers = signal<SupplierDefinition[]>([]);
+  readonly suppliersLoading = signal(false);
+  readonly suppliersFetched = signal(false);
 
   readonly orderId = toSignal(
     this.route.paramMap.pipe(map((params) => params.get('id') ?? '')),
@@ -233,7 +238,13 @@ export class OrderDetailPageComponent {
   );
 
   readonly order = computed(() => this.ordersStore.orderById(this.orderId()));
-  readonly suppliers = computed(() => this.resolveSuppliers());
+  readonly suppliers = computed(() => {
+    if (this.loadedSuppliers().length > 0) {
+      return this.loadedSuppliers();
+    }
+
+    return this.resolveSuppliers();
+  });
   readonly hasSupplierUploads = computed(() =>
     Object.values(this.order()?.supplierUploads ?? {}).some((uploads) => uploads.length > 0)
   );
@@ -265,6 +276,10 @@ export class OrderDetailPageComponent {
 
         if (!currentOrder && !this.fetchedOrderIds()[orderId] && !this.orderLoading()) {
           void this.loadOrder(orderId);
+        }
+
+        if (!this.suppliersLoading() && !this.suppliersFetched()) {
+          void this.loadSuppliers();
         }
       },
       { allowSignalWrites: true }
@@ -627,6 +642,20 @@ export class OrderDetailPageComponent {
       ...currentState,
       [supplierId]: state
     }));
+  }
+
+  private async loadSuppliers(): Promise<void> {
+    this.suppliersLoading.set(true);
+
+    try {
+      const suppliers = await firstValueFrom(this.suppliersService.getSuppliers());
+      this.loadedSuppliers.set(suppliers);
+    } catch (error: unknown) {
+      this.pageError.set(this.toMessage(error, 'Non sono riuscito a caricare i fornitori.'));
+    } finally {
+      this.suppliersFetched.set(true);
+      this.suppliersLoading.set(false);
+    }
   }
 
   private resolveSuppliers(): SupplierDefinition[] {

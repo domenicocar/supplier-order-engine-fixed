@@ -1,5 +1,5 @@
-import { provideHttpClient, withInterceptorsFromDi } from '@angular/common/http';
-import { ApplicationConfig, provideZoneChangeDetection } from '@angular/core';
+import { HTTP_INTERCEPTORS, provideHttpClient, withInterceptorsFromDi } from '@angular/common/http';
+import { APP_INITIALIZER, ApplicationConfig, provideZoneChangeDetection } from '@angular/core';
 import { provideAnimationsAsync } from '@angular/platform-browser/animations/async';
 import { provideRouter, withInMemoryScrolling } from '@angular/router';
 import Aura from '@primeng/themes/aura';
@@ -7,7 +7,13 @@ import { providePrimeNG } from 'primeng/config';
 
 import { environment } from '../environments/environment';
 import { appRoutes } from './app.routes';
+import { AuthInterceptor } from './core/interceptors/auth.interceptor';
 import { API_BASE_URL } from './core/tokens/api-base-url.token';
+import { AuthStore } from './features/auth/stores/auth.store';
+
+function initializeAuthFactory(authStore: AuthStore): () => Promise<void> {
+  return () => authStore.initialize();
+}
 
 export const appConfig: ApplicationConfig = {
   providers: [
@@ -37,6 +43,17 @@ export const appConfig: ApplicationConfig = {
     {
       provide: API_BASE_URL,
       useValue: environment.apiBaseUrl
+    },
+    {
+      provide: HTTP_INTERCEPTORS,
+      useClass: AuthInterceptor,
+      multi: true
+    },
+    {
+      provide: APP_INITIALIZER,
+      useFactory: initializeAuthFactory,
+      deps: [AuthStore],
+      multi: true
     }
   ]
 };
