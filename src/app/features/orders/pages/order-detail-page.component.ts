@@ -19,9 +19,10 @@ import {
   PdfImportStatusResponse,
   ReviewItem,
   SupplierComparisonOffer,
-  SupplierComparisonRow
+  SupplierComparisonRow,
+  SupplierUploadResult
 } from '../../../models/order.models';
-import { SupplierDefinition } from '../../../models/supplier.models';
+import { SupplierDefinition, SupplierStoredFile } from '../../../models/supplier.models';
 import { OrdersSessionStore } from '../../../services/orders-session.store';
 import { OrdersService } from '../../../services/orders.service';
 import { SuppliersService } from '../../../services/suppliers.service';
@@ -228,9 +229,11 @@ export class OrderDetailPageComponent {
   readonly supplierLoadingState = signal<Record<string, boolean>>({});
   readonly supplierUploadState = signal<Record<string, UploadCardState>>({});
   readonly fetchedOrderIds = signal<Record<string, boolean>>({});
+  readonly hydratedSupplierFileOrderIds = signal<Record<string, boolean>>({});
   readonly loadedSuppliers = signal<SupplierDefinition[]>([]);
   readonly suppliersLoading = signal(false);
   readonly suppliersFetched = signal(false);
+  readonly supplierFilesLoading = signal(false);
 
   readonly orderId = toSignal(
     this.route.paramMap.pipe(map((params) => params.get('id') ?? '')),
@@ -274,12 +277,23 @@ export class OrderDetailPageComponent {
           this.supplierComparisonRequested.set(true);
         }
 
-        if (!currentOrder && !this.fetchedOrderIds()[orderId] && !this.orderLoading()) {
+        // When we arrive here from a redirect after create/list navigation, the store can
+        // already contain a partial order summary. We still need to hydrate the detail once.
+        if (!this.fetchedOrderIds()[orderId] && !this.orderLoading()) {
           void this.loadOrder(orderId);
         }
 
         if (!this.suppliersLoading() && !this.suppliersFetched()) {
           void this.loadSuppliers();
+        }
+
+        if (
+          currentOrder &&
+          this.suppliersFetched() &&
+          !this.supplierFilesLoading() &&
+          !this.hydratedSupplierFileOrderIds()[orderId]
+        ) {
+          void this.loadSupplierFiles(orderId);
         }
       },
       { allowSignalWrites: true }
@@ -287,6 +301,10 @@ export class OrderDetailPageComponent {
   }
 
   onPdfFileSelected(file: File): void {
+    console.log('[OrderDetailPage] import PDF start', {
+      orderId: this.orderId(),
+      fileName: file.name
+    });
     this.selectedPdfFile.set(file);
     this.lastPdfFileName.set(file.name);
 
@@ -302,6 +320,11 @@ export class OrderDetailPageComponent {
     const orderId = this.orderId();
 
     if (!file || !orderId || this.pdfImportStatus() === 'processing') {
+      console.log('[OrderDetailPage] import PDF skipped', {
+        hasFile: !!file,
+        orderId,
+        status: this.pdfImportStatus()
+      });
       return;
     }
 
@@ -311,6 +334,13 @@ export class OrderDetailPageComponent {
 
     try {
       const response = await firstValueFrom(this.ordersService.importPdf(orderId, file));
+      console.log('[OrderDetailPage] import PDF response', {
+        orderId,
+        status: response.status,
+        items: response.items.length,
+        reviewItems: response.reviewItems.length,
+        hasImportResult: !!response.importResult
+      });
 
       if (response.status === 'processing') {
         this.pdfImportStatus.set('processing');
@@ -330,6 +360,7 @@ export class OrderDetailPageComponent {
         });
       }
     } catch (error: unknown) {
+      console.error('[OrderDetailPage] import PDF error', error);
       this.pdfImportStatus.set('failed');
       this.pdfImportMessage.set(this.toMessage(error, 'Import PDF non riuscito.'));
     } finally {
@@ -644,6 +675,61 @@ export class OrderDetailPageComponent {
     }));
   }
 
+  private mapStoredFilesToSupplierUploads(
+    files: SupplierStoredFile[]
+  ): Record<string, SupplierUploadResult[]> {
+    const uploadsBySupplier = new Map<string, SupplierUploadResult[]>();
+
+    for (const file of files) {
+      const currentUploads = uploadsBySupplier.get(file.supplierId) ?? [];
+      currentUploads.push({
+        supplierId: file.supplierId,
+        fileName: file.originalFileName,
+        uploadedAt: file.uploadedAt,
+        message: 'File fornitore già caricato.',
+        files: [],
+        products: []
+      });
+      uploadsBySupplier.set(file.supplierId, currentUploads);
+    }
+
+    return Object.fromEntries(
+      Array.from(uploadsBySupplier.entries()).map(([supplierId, uploads]) => [
+        supplierId,
+        uploads.sort(
+          (left, right) => this.parseUploadDate(left.uploadedAt) - this.parseUploadDate(right.uploadedAt)
+        )
+      ])
+    );
+  }
+
+  private buildPersistedSupplierUploadState(
+    uploadsBySupplier: Record<string, SupplierUploadResult[]>,
+    suppliers: SupplierDefinition[]
+  ): Record<string, UploadCardState> {
+    const state: Record<string, UploadCardState> = {};
+
+    for (const supplier of suppliers) {
+      const latestUpload = uploadsBySupplier[supplier.id]?.at(-1);
+
+      state[supplier.id] = latestUpload
+        ? {
+            status: 'completed',
+            fileName: latestUpload.fileName,
+            message: 'File fornitore già caricato.',
+            updatedAt: latestUpload.uploadedAt
+          }
+        : {
+            status: 'idle',
+            fileName: null,
+            message: 'Seleziona un file per caricare subito il listino di questo fornitore.',
+            updatedAt: null
+          };
+    }
+
+    return state;
+  }
+
   private async loadSuppliers(): Promise<void> {
     this.suppliersLoading.set(true);
 
@@ -655,6 +741,29 @@ export class OrderDetailPageComponent {
     } finally {
       this.suppliersFetched.set(true);
       this.suppliersLoading.set(false);
+    }
+  }
+
+  private async loadSupplierFiles(orderId: string): Promise<void> {
+    this.supplierFilesLoading.set(true);
+
+    try {
+      const files = await firstValueFrom(this.suppliersService.getSupplierFiles());
+      const uploadsBySupplier = this.mapStoredFilesToSupplierUploads(files);
+      this.ordersStore.setSupplierUploads(orderId, uploadsBySupplier);
+      this.supplierUploadState.set(
+        this.buildPersistedSupplierUploadState(uploadsBySupplier, this.loadedSuppliers())
+      );
+      this.hydratedSupplierFileOrderIds.update((state) => ({
+        ...state,
+        [orderId]: true
+      }));
+    } catch (error: unknown) {
+      this.pageError.set(
+        this.toMessage(error, 'Non sono riuscito a ricaricare i file dei fornitori.')
+      );
+    } finally {
+      this.supplierFilesLoading.set(false);
     }
   }
 
@@ -783,8 +892,14 @@ export class OrderDetailPageComponent {
   private async refreshOrderAfterPdfImport(orderId: string): Promise<void> {
     try {
       const response = await firstValueFrom(this.ordersService.getOrderById(orderId));
+      console.log('[OrderDetailPage] refresh order after import', {
+        orderId,
+        items: response.order.items.length,
+        reviewItems: response.order.reviewItems.length
+      });
       this.ordersStore.upsertOrder(response.order);
     } catch (error: unknown) {
+      console.error('[OrderDetailPage] refresh order after import error', error);
       this.pdfImportRefreshWarning.set(
         'Import completato, ma non sono riuscito ad aggiornare la tabella. Ricarica la pagina.'
       );
@@ -808,5 +923,14 @@ export class OrderDetailPageComponent {
     }
 
     return fallback;
+  }
+
+  private parseUploadDate(uploadedAt: string | null): number {
+    if (!uploadedAt) {
+      return 0;
+    }
+
+    const parsed = Date.parse(uploadedAt);
+    return Number.isFinite(parsed) ? parsed : 0;
   }
 }

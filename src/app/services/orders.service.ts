@@ -8,6 +8,7 @@ import {
   ExportedFile,
   GetOrderResponse,
   ImportOrderResponse,
+  ListOrdersResponse,
   OrderExportResult,
   OrderImportResult,
   OrderItem,
@@ -29,6 +30,15 @@ import { ApiService } from './api.service';
 export class OrdersService {
   private readonly api = inject(ApiService);
 
+  getOrders(): Observable<ListOrdersResponse> {
+    console.log('[OrdersService] GET /orders');
+    return this.api.get<unknown>('/orders').pipe(
+      map((payload) => ({
+        orders: this.normalizeSessionOrders(payload)
+      }))
+    );
+  }
+
   createOrder(): Observable<CreateOrderResponse> {
     return this.api.post<unknown>('/orders/create', {}).pipe(
       map((payload) => ({
@@ -46,6 +56,10 @@ export class OrdersService {
   }
 
   importPdf(orderId: string, file: File): Observable<ImportOrderResponse> {
+    console.log('[OrdersService] POST /orders/:id/import-pdf', {
+      orderId,
+      fileName: file.name
+    });
     const formData = new FormData();
     formData.append('file', file);
 
@@ -108,8 +122,17 @@ export class OrdersService {
 
           return {
             supplierId,
-            fileName: file.name,
-            uploadedAt: new Date().toISOString(),
+            fileName:
+              this.pickString(source, [
+                'originalFileName',
+                'original_file_name',
+                'fileName',
+                'filename',
+                'name'
+              ]) ?? file.name,
+            uploadedAt:
+              this.pickString(source, ['uploadedAt', 'uploaded_at', 'createdAt', 'created_at']) ??
+              new Date().toISOString(),
             message: this.pickString(source, ['message', 'status', 'result']) ?? 'Upload completato',
             files: this.normalizeExportedFiles(
               this.pickValue(source, ['files', 'uploadedFiles', 'results'])
@@ -131,6 +154,19 @@ export class OrdersService {
       );
   }
 
+  private normalizeSessionOrders(payload: unknown): SessionOrder[] {
+    if (Array.isArray(payload)) {
+      return payload.map((entry) => this.normalizeSessionOrder(entry));
+    }
+
+    const source = this.unwrap(payload);
+    const orders = this.pickValue(source, ['orders', 'data', 'results', 'items']);
+
+    return this.asArray(orders)
+      .filter((entry) => this.isRecord(entry))
+      .map((entry) => this.normalizeSessionOrder(entry));
+  }
+
   private normalizeSessionOrder(payload: unknown): SessionOrder {
     const source = this.unwrap(payload);
     const orderSource = this.unwrap(this.pickValue(source, ['order']) ?? source);
@@ -139,22 +175,48 @@ export class OrdersService {
       this.pickString(orderSource, ['status']) ??
       this.pickString(source, ['status']) ??
       'CREATED';
+    const items = this.normalizeItems(
+      this.pickValue(orderSource, ['items', 'orderItems', 'order_items']) ??
+        this.pickValue(source, ['items', 'orderItems', 'order_items'])
+    );
+    const reviewItems = this.normalizeReviewItems(
+      this.pickValue(orderSource, ['reviewItems', 'review_items']) ??
+        this.pickValue(source, ['reviewItems', 'review_items'])
+    );
+    const importPdfItemsCount =
+      this.pickNumber(orderSource, [
+        'importPdfItemsCount',
+        'import_pdf_items_count',
+        'itemsCount',
+        'items_count',
+        'productsCount',
+        'products_count',
+        'orderItemsCount',
+        'order_items_count'
+      ]) ??
+      this.pickNumber(source, [
+        'importPdfItemsCount',
+        'import_pdf_items_count',
+        'itemsCount',
+        'items_count',
+        'productsCount',
+        'products_count',
+        'orderItemsCount',
+        'order_items_count'
+      ]);
 
     return {
       id,
       status,
       createdAt:
         this.pickString(orderSource, ['createdAt', 'created_at']) ?? new Date().toISOString(),
-      items: this.normalizeItems(this.pickValue(orderSource, ['items'])),
-      reviewItems: this.normalizeReviewItems(this.pickValue(orderSource, ['reviewItems'])),
+      items,
+      reviewItems,
       importPdfStatus: this.pickPdfImportStatus(
         orderSource,
         ['importPdfStatus', 'import_pdf_status']
       ),
-      importPdfItemsCount: this.pickNumber(orderSource, [
-        'importPdfItemsCount',
-        'import_pdf_items_count'
-      ]),
+      importPdfItemsCount,
       importPdfError:
         this.pickString(orderSource, ['importPdfError', 'import_pdf_error']) ?? null,
       suppliers: this.normalizeSuppliers(

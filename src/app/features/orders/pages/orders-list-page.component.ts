@@ -1,6 +1,6 @@
 import { DatePipe } from '@angular/common';
-import { ChangeDetectionStrategy, Component, inject, signal } from '@angular/core';
-import { RouterLink } from '@angular/router';
+import { ChangeDetectionStrategy, Component, OnDestroy, OnInit, inject, signal } from '@angular/core';
+import { Router, RouterLink } from '@angular/router';
 import { firstValueFrom } from 'rxjs';
 import { ButtonModule } from 'primeng/button';
 
@@ -87,7 +87,7 @@ import { StatusTagComponent } from '../../../shared/components/status-tag.compon
                 </div>
                 <div class="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
                   <p class="text-xs uppercase tracking-[0.18em] text-slate-400">Prodotti</p>
-                  <p class="mt-2 font-medium text-slate-950">{{ order.items.length }}</p>
+                  <p class="mt-2 font-medium text-slate-950">{{ orderItemsCount(order) }}</p>
                 </div>
               </div>
 
@@ -103,22 +103,49 @@ import { StatusTagComponent } from '../../../shared/components/status-tag.compon
   `,
   changeDetection: ChangeDetectionStrategy.OnPush
 })
-export class OrdersListPageComponent {
+export class OrdersListPageComponent implements OnInit, OnDestroy {
   private readonly ordersService = inject(OrdersService);
   private readonly ordersStore = inject(OrdersSessionStore);
+  private readonly router = inject(Router);
 
   readonly orders = this.ordersStore.orders;
   readonly creating = signal(false);
   readonly error = signal<string | null>(null);
 
+  ngOnInit(): void {
+    console.log('[OrdersPage] init');
+    void this.loadOrders();
+  }
+
+  ngOnDestroy(): void {
+    console.log('[OrdersPage] destroy');
+  }
+
+  async loadOrders(): Promise<void> {
+    console.log('[OrdersPage] loadOrders');
+    this.error.set(null);
+
+    try {
+      const response = await firstValueFrom(this.ordersService.getOrders());
+      this.ordersStore.setOrders(response.orders);
+    } catch (error: unknown) {
+      this.error.set(this.toMessage(error, 'Caricamento ordini non riuscito.'));
+    }
+  }
+
   async createOrder(): Promise<void> {
+    console.log('[OrdersPage] create order start');
     this.creating.set(true);
     this.error.set(null);
 
     try {
       const response = await firstValueFrom(this.ordersService.createOrder());
+      console.log('[OrdersPage] order created orderId', response.order.id);
       this.ordersStore.upsertOrder(response.order);
+      console.log(`[OrdersPage] navigating to order detail orderId=${response.order.id}`);
+      await this.router.navigate(['/app/orders', response.order.id]);
     } catch (error: unknown) {
+      console.error('[OrdersPage] create order error', error);
       this.error.set(this.toMessage(error, 'Creazione ordine non riuscita.'));
     } finally {
       this.creating.set(false);
@@ -131,5 +158,13 @@ export class OrdersListPageComponent {
     }
 
     return fallback;
+  }
+
+  protected orderItemsCount(order: { items: unknown[]; importPdfItemsCount?: number | null }): number {
+    if (order.items.length > 0) {
+      return order.items.length;
+    }
+
+    return order.importPdfItemsCount ?? 0;
   }
 }

@@ -19,6 +19,10 @@ export class OrdersSessionStore {
     return this.ordersState().find((order) => order.id === id);
   }
 
+  setOrders(orders: SessionOrder[]): void {
+    this.ordersState.set(orders);
+  }
+
   upsertOrder(order: SessionOrder): void {
     this.ordersState.update((orders) => {
       const index = orders.findIndex((current) => current.id === order.id);
@@ -108,5 +112,60 @@ export class OrdersSessionStore {
         };
       })
     );
+  }
+
+  setSupplierUploads(
+    orderId: string,
+    uploadsBySupplier: Record<string, SupplierUploadResult[]>
+  ): void {
+    this.ordersState.update((orders) =>
+      orders.map((order) => {
+        if (order.id !== orderId) {
+          return order;
+        }
+
+        const nextUploads = { ...order.supplierUploads };
+
+        for (const [supplierId, uploads] of Object.entries(uploadsBySupplier)) {
+          const existingUploads = nextUploads[supplierId] ?? [];
+          nextUploads[supplierId] = this.mergeSupplierUploads(existingUploads, uploads);
+        }
+
+        return {
+          ...order,
+          supplierUploads: nextUploads
+        };
+      })
+    );
+  }
+
+  private mergeSupplierUploads(
+    existingUploads: SupplierUploadResult[],
+    incomingUploads: SupplierUploadResult[]
+  ): SupplierUploadResult[] {
+    const uploadsByKey = new Map<string, SupplierUploadResult>();
+
+    for (const upload of [...existingUploads, ...incomingUploads]) {
+      uploadsByKey.set(this.supplierUploadKey(upload), upload);
+    }
+
+    return Array.from(uploadsByKey.values()).sort((left, right) => {
+      const leftTime = this.parseUploadTime(left.uploadedAt);
+      const rightTime = this.parseUploadTime(right.uploadedAt);
+      return leftTime - rightTime;
+    });
+  }
+
+  private supplierUploadKey(upload: SupplierUploadResult): string {
+    return `${upload.supplierId}::${upload.fileName}::${upload.uploadedAt ?? ''}`;
+  }
+
+  private parseUploadTime(uploadedAt: string | null): number {
+    if (!uploadedAt) {
+      return 0;
+    }
+
+    const parsed = Date.parse(uploadedAt);
+    return Number.isFinite(parsed) ? parsed : 0;
   }
 }

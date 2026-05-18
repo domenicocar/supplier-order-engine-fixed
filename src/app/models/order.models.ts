@@ -59,7 +59,7 @@ export interface SupplierComparisonRow {
 export interface SupplierUploadResult {
   supplierId: string;
   fileName: string;
-  uploadedAt: string;
+  uploadedAt: string | null;
   message?: string;
   files: ExportedFile[];
   products: SupplierUploadProduct[];
@@ -94,6 +94,10 @@ export interface CreateOrderResponse {
 
 export interface GetOrderResponse {
   order: SessionOrder;
+}
+
+export interface ListOrdersResponse {
+  orders: SessionOrder[];
 }
 
 export interface SupplierComparisonResponse {
