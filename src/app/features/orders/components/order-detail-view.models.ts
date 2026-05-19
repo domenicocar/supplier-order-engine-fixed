@@ -1,4 +1,10 @@
-import { SupplierComparisonOffer } from '../../../models/order.models';
+import {
+  OrderFilePreviewResult,
+  OrderImportColumnMapping,
+  SupplierColumnMapping,
+  SupplierComparisonOffer,
+  SupplierUploadPreview
+} from '../../../models/order.models';
 
 export interface SupplierComparisonSelection {
   selectedSupplierId: string;
@@ -60,4 +66,18 @@ export interface UploadCardState {
   fileName: string | null;
   message: string | null;
   updatedAt?: string | null;
+}
+
+export interface OrderImportPreviewState {
+  file: File | null;
+  preview: OrderFilePreviewResult | null;
+  mapping: OrderImportColumnMapping | null;
+}
+
+export interface SupplierUploadPreviewState {
+  file: File | null;
+  preview: SupplierUploadPreview | null;
+  mapping: SupplierColumnMapping | null;
+  confirming: boolean;
+  error?: string | null;
 }

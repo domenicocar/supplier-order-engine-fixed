@@ -32,16 +32,15 @@ export function formatRate(value: number | null): string {
 
 export function formatPrice(value: number | null): string {
   if (value === null) {
-    return '€ -';
+    return 'EUR -';
   }
 
-  return `€ ${value.toFixed(2).replace('.', ',')}`;
+  return `EUR ${value.toFixed(2).replace('.', ',')}`;
 }
 
 export function formatSupplierOption(option: SupplierComparisonOffer): string {
   const packageSize = option.packageSize > 0 ? option.packageSize : 1;
-  const packPrice =
-    option.price === null ? null : option.price * packageSize;
+  const packPrice = option.price === null ? null : option.price * packageSize;
 
   return `${option.supplierName}: ${formatPrice(option.price)} cad. · conf. ${packageSize} · ${formatPrice(packPrice)} a confezione`;
 }

@@ -15,24 +15,26 @@ import { switchMap } from 'rxjs/operators';
 import { TabsModule } from 'primeng/tabs';
 
 import {
+  ImportOrderFileResponse,
+  OrderFilePreviewResult,
+  OrderImportColumnMapping,
   OrderItem,
-  PdfImportJobStatus,
-  PdfImportStatusResponse,
   ReviewItem,
-  SupplierComparisonOffer,
+  SupplierColumnMapping,
   SupplierComparisonRow
 } from '../../../models/order.models';
-import { SupplierDefinition } from '../../../models/supplier.models';
+import { SupplierCreatePayload, SupplierDefinition } from '../../../models/supplier.models';
 import { OrdersSessionStore } from '../../../services/orders-session.store';
 import { OrdersService } from '../../../services/orders.service';
-import { SuppliersService } from '../../../services/suppliers.service';
 import { OrderExportTabComponent } from '../components/order-export-tab.component';
 import {
   OrderExportOverview,
+  OrderImportPreviewState,
   OrderExportSummaryRow,
   SupplierComparisonSelection,
   SupplierComparisonTableRow,
   SupplierExportSummary,
+  SupplierUploadPreviewState,
   UploadCardState
 } from '../components/order-detail-view.models';
 import { OrderImportTabComponent } from '../components/order-import-tab.component';
@@ -136,15 +138,18 @@ import { StatusTagComponent } from '../../../shared/components/status-tag.compon
                 <app-order-import-tab
                   [order]="currentOrder"
                   [suppliers]="suppliers()"
-                  [selectedPdfFile]="selectedPdfFile()"
-                  [lastPdfFileName]="lastPdfFileName()"
-                  [pdfUploading]="pdfUploading()"
-                  [pdfImportStatus]="pdfImportStatus()"
-                  [pdfImportMessage]="pdfImportMessage()"
-                  [pdfImportRefreshWarning]="pdfImportRefreshWarning()"
+                  [orderImportPreviewState]="orderImportPreviewState()"
+                  [orderFileUploading]="orderFileUploading()"
+                  [orderFileImporting]="orderFileImporting()"
+                  [orderFileMessage]="orderFileMessage()"
                   [supplierUploadState]="supplierUploadState()"
-                  (pdfUploadRequested)="onPdfFileSelected($event)"
+                  [supplierPreviewState]="supplierPreviewState()"
+                  [supplierCreating]="supplierCreating()"
+                  (orderFileSelected)="onOrderFileSelected($event)"
+                  (orderImportConfirmed)="onOrderImportConfirmed($event)"
                   (supplierFileSelected)="onSupplierFileSelected($event)"
+                  (supplierMappingConfirmed)="onSupplierMappingConfirmed($event)"
+                  (supplierCreateRequested)="onSupplierCreateRequested($event)"
                 />
               </p-tabpanel>
 
@@ -205,22 +210,18 @@ import { StatusTagComponent } from '../../../shared/components/status-tag.compon
   changeDetection: ChangeDetectionStrategy.OnPush
 })
 export class OrderDetailPageComponent {
-  private pdfImportPollingSubscription: Subscription | null = null;
   private draftSyncTimeoutId: ReturnType<typeof setTimeout> | null = null;
   private readonly route = inject(ActivatedRoute);
   private readonly destroyRef = inject(DestroyRef);
   private readonly ordersStore = inject(OrdersSessionStore);
   private readonly ordersService = inject(OrdersService);
-  private readonly suppliersService = inject(SuppliersService);
 
   readonly activeTab = signal<'import' | 'products' | 'comparison' | 'export'>('import');
   readonly orderLoading = signal(false);
-  readonly selectedPdfFile = signal<File | null>(null);
-  readonly lastPdfFileName = signal<string | null>(null);
-  readonly pdfUploading = signal(false);
-  readonly pdfImportStatus = signal<PdfImportJobStatus>('idle');
-  readonly pdfImportMessage = signal<string | null>(null);
-  readonly pdfImportRefreshWarning = signal<string | null>(null);
+  readonly orderImportPreviewState = signal<OrderImportPreviewState | null>(null);
+  readonly orderFileUploading = signal(false);
+  readonly orderFileImporting = signal(false);
+  readonly orderFileMessage = signal<string | null>(null);
   readonly exporting = signal(false);
   readonly pageError = signal<string | null>(null);
   readonly supplierComparisonRequested = signal(false);
@@ -230,10 +231,9 @@ export class OrderDetailPageComponent {
   readonly supplierComparisonQuantities = signal<Record<string, number | null>>({});
   readonly supplierLoadingState = signal<Record<string, boolean>>({});
   readonly supplierUploadState = signal<Record<string, UploadCardState>>({});
+  readonly supplierPreviewState = signal<Record<string, SupplierUploadPreviewState>>({});
+  readonly supplierCreating = signal(false);
   readonly fetchedOrderIds = signal<Record<string, boolean>>({});
-  readonly loadedSuppliers = signal<SupplierDefinition[]>([]);
-  readonly suppliersLoading = signal(false);
-  readonly suppliersFetched = signal(false);
 
   readonly orderId = toSignal(
     this.route.paramMap.pipe(map((params) => params.get('id') ?? '')),
@@ -241,13 +241,7 @@ export class OrderDetailPageComponent {
   );
 
   readonly order = computed(() => this.ordersStore.orderById(this.orderId()));
-  readonly suppliers = computed(() => {
-    if (this.loadedSuppliers().length > 0) {
-      return this.loadedSuppliers();
-    }
-
-    return this.resolveSuppliers();
-  });
+  readonly suppliers = computed(() => this.resolveSuppliers());
   readonly hasSupplierUploads = computed(() =>
     Object.values(this.order()?.supplierUploads ?? {}).some((uploads) => uploads.length > 0)
   );
@@ -263,7 +257,6 @@ export class OrderDetailPageComponent {
 
   constructor() {
     this.destroyRef.onDestroy(() => {
-      this.stopPdfImportPolling();
       this.clearDraftSyncTimeout();
     });
 
@@ -276,70 +269,85 @@ export class OrderDetailPageComponent {
           return;
         }
 
-        if (currentOrder?.supplierComparisonRows?.length) {
-          this.supplierComparisonRequested.set(true);
-        }
+        this.supplierComparisonRequested.set(
+          (currentOrder?.supplierComparisonRows?.length ?? 0) > 0
+        );
 
         if (!this.fetchedOrderIds()[orderId] && !this.orderLoading()) {
           void this.loadOrder(orderId);
-        }
-
-        if (!this.suppliersLoading() && !this.suppliersFetched()) {
-          void this.loadSuppliers();
         }
       },
       { allowSignalWrites: true }
     );
   }
 
-  onPdfFileSelected(file: File): void {
-    this.selectedPdfFile.set(file);
-    this.lastPdfFileName.set(file.name);
-
-    if (this.pdfImportStatus() !== 'processing') {
-      this.resetPdfImportFeedback();
-    }
-
-    void this.uploadPdf(file);
+  onOrderFileSelected(file: File): void {
+    void this.previewOrderImportFile(file);
   }
 
-  async uploadPdf(fileFromEvent?: File): Promise<void> {
-    const file = fileFromEvent ?? this.selectedPdfFile();
+  async onOrderImportConfirmed(payload: {
+    file: File;
+    mapping: OrderImportColumnMapping | null;
+  }): Promise<void> {
     const orderId = this.orderId();
 
-    if (!file || !orderId || this.pdfImportStatus() === 'processing') {
+    if (!orderId) {
       return;
     }
 
-    this.pdfUploading.set(true);
+    this.orderFileImporting.set(true);
+    this.orderFileMessage.set('Importazione in corso...');
     this.pageError.set(null);
-    this.resetPdfImportFeedback();
 
     try {
-      const response = await firstValueFrom(this.ordersService.importPdf(orderId, file));
-
-      if (response.status === 'processing') {
-        this.pdfImportStatus.set('processing');
-        this.pdfImportMessage.set('PDF ricevuto. Elaborazione in corso...');
-        this.startPdfImportPolling(orderId);
-        return;
-      }
-
-      if (response.importResult) {
-        this.pdfImportStatus.set('completed');
-        this.pdfImportMessage.set('Importazione completata con successo.');
-        this.ordersStore.setImportResult(orderId, {
-          status: response.status,
-          items: response.items,
-          reviewItems: response.reviewItems,
-          importResult: response.importResult
-        });
-      }
+      const response = await firstValueFrom(
+        this.ordersService.importOrderFile(orderId, payload.file, payload.mapping)
+      );
+      await this.refreshOrderAfterGenericImport(orderId, response);
+      this.orderImportPreviewState.set(null);
+      this.orderFileMessage.set(
+        `Importazione completata: ${response.importedItems} prodotti aggiunti al draft.`
+      );
     } catch (error: unknown) {
-      this.pdfImportStatus.set('failed');
-      this.pdfImportMessage.set(this.toMessage(error, 'Import PDF non riuscito.'));
+      this.orderFileMessage.set(this.toMessage(error, 'Import ordine non riuscito.'));
     } finally {
-      this.pdfUploading.set(false);
+      this.orderFileImporting.set(false);
+    }
+  }
+
+  async previewOrderImportFile(file: File): Promise<void> {
+    const orderId = this.orderId();
+
+    if (!orderId) {
+      return;
+    }
+
+    this.orderFileUploading.set(true);
+    this.pageError.set(null);
+    this.orderFileMessage.set('Analisi file in corso...');
+    this.orderImportPreviewState.set({
+      file,
+      preview: null,
+      mapping: null
+    });
+
+    try {
+      const preview = await firstValueFrom(this.ordersService.previewOrderFile(orderId, file));
+      this.orderImportPreviewState.set({
+        file,
+        preview,
+        mapping: preview.detectedMapping
+      });
+      this.orderFileMessage.set(
+        preview.requiresMapping
+          ? 'Preview pronta. Conferma il mapping delle colonne.'
+          : 'Preview pronta. Puoi confermare l\'import.'
+      );
+    } catch (error: unknown) {
+      this.orderImportPreviewState.set(null);
+      this.orderFileMessage.set(this.toMessage(error, 'Analisi file ordine non riuscita.'));
+    } finally {
+      this.orderFileUploading.set(false);
     }
   }
 
@@ -348,10 +356,71 @@ export class OrderDetailPageComponent {
   }
 
   onSupplierFileSelected(payload: { supplierId: string; file: File }): void {
-    void this.uploadSupplierFile(payload.supplierId, payload.file);
+    void this.previewSupplierFile(payload.supplierId, payload.file);
   }
 
-  async uploadSupplierFile(supplierId: string, fileFromEvent?: File): Promise<void> {
+  async onSupplierMappingConfirmed(payload: {
+    supplierId: string;
+    file: File;
+    mapping: SupplierColumnMapping | null;
+  }): Promise<void> {
+    await this.uploadSupplierFile(payload.supplierId, payload.file, {
+      mapping: payload.mapping,
+      persistMapping: true
+    });
+  }
+
+  async onSupplierCreateRequested(payload: SupplierCreatePayload): Promise<void> {
+    const orderId = this.orderId();
+
+    if (!orderId) {
+      return;
+    }
+
+    this.supplierCreating.set(true);
+    this.pageError.set(null);
+
+    try {
+      const createdSupplier = await firstValueFrom(
+        this.ordersService.createOrderSupplier(orderId, payload)
+      );
+      const currentOrder = this.order();
+      const nextSuppliers = [
+        ...(currentOrder?.suppliers ?? []).filter((supplier) => supplier.id !== createdSupplier.id),
+        createdSupplier
+      ].sort((left, right) => left.name.localeCompare(right.name));
+      this.ordersStore.upsertOrder({
+        ...(currentOrder ?? {
+          id: orderId,
+          status: 'draft',
+          createdAt: new Date().toISOString(),
+          items: [],
+          reviewItems: [],
+          supplierUploads: {}
+        }),
+        suppliers: nextSuppliers
+      });
+    } catch (error: unknown) {
+      this.pageError.set(this.toMessage(error, 'Creazione fornitore non riuscita.'));
+    } finally {
+      this.supplierCreating.set(false);
+    }
+  }
+
+  async previewSupplierFile(supplierId: string, file: File): Promise<void> {
+    await this.uploadSupplierFile(supplierId, file, {
+      persistMapping: false
+    });
+  }
+
+  async uploadSupplierFile(
+    supplierId: string,
+    fileFromEvent?: File,
+    options?: {
+      mapping?: SupplierColumnMapping | null;
+      persistMapping?: boolean;
+    }
+  ): Promise<void> {
     const orderId = this.orderId();
     const file = fileFromEvent;
 
@@ -363,28 +432,68 @@ export class OrderDetailPageComponent {
     this.setSupplierUploadState(supplierId, {
       status: 'uploading',
       fileName: file.name,
-      message: `Upload in corso per ${file.name}...`,
+      message:
+        options?.persistMapping
+          ? `Salvataggio mapping per ${file.name}...`
+          : `Analisi file fornitore ${file.name}...`,
       updatedAt: new Date().toISOString()
     });
     this.pageError.set(null);
+    this.setSupplierPreviewState(supplierId, {
+      file,
+      preview: options?.persistMapping ? this.supplierPreviewState()[supplierId]?.preview ?? null : null,
+      mapping: options?.mapping ?? this.supplierPreviewState()[supplierId]?.mapping ?? null,
+      confirming: !!options?.persistMapping,
+      error: null
+    });
 
     try {
-      const response = await firstValueFrom(this.ordersService.uploadSupplierFile(supplierId, file));
-      this.ordersStore.appendSupplierUpload(orderId, response);
-      this.supplierComparisonRequested.set(false);
-      this.supplierComparisonError.set(null);
-      this.ordersStore.setSupplierComparisonRows(orderId, []);
-      this.setSupplierUploadState(supplierId, {
-        status: 'completed',
-        fileName: response.fileName,
-        message: response.message || 'Upload completato.',
-        updatedAt: response.uploadedAt
-      });
+      const response = await firstValueFrom(
+        this.ordersService.uploadSupplierFile(orderId, supplierId, file, options)
+      );
+
+      if (options?.persistMapping) {
+        const refreshedOrder = await firstValueFrom(this.ordersService.getOrderById(orderId));
+        this.ordersStore.upsertOrder(refreshedOrder.order);
+        this.supplierComparisonRequested.set(false);
+        this.supplierComparisonError.set(null);
+        this.ordersStore.setSupplierComparisonRows(orderId, []);
+        this.clearSupplierPreviewState(supplierId);
+        this.setSupplierUploadState(supplierId, {
+          status: 'completed',
+          fileName: response.fileName,
+          message: response.message || 'Upload completato.',
+          updatedAt: response.uploadedAt
+        });
+      } else {
+        this.setSupplierPreviewState(supplierId, {
+          file,
+          preview: response.preview ?? null,
+          mapping: response.preview?.detectedMapping ?? null,
+          confirming: false,
+          error: null
+        });
+        this.setSupplierUploadState(supplierId, {
+          status: 'processing',
+          fileName: response.fileName,
+          message:
+            response.message || 'Preview pronta. Conferma le colonne per salvare il mapping.',
+          updatedAt: response.uploadedAt
+        });
+      }
     } catch (error: unknown) {
+      const message = this.toMessage(error, `Upload file fornitore ${supplierId} non riuscito.`);
+      this.setSupplierPreviewState(supplierId, {
+        file,
+        preview: this.supplierPreviewState()[supplierId]?.preview ?? null,
+        mapping: options?.mapping ?? this.supplierPreviewState()[supplierId]?.mapping ?? null,
+        confirming: false,
+        error: message
+      });
       this.setSupplierUploadState(supplierId, {
         status: 'failed',
         fileName: file.name,
-        message: this.toMessage(error, `Upload file fornitore ${supplierId} non riuscito.`),
+        message,
         updatedAt: new Date().toISOString()
       });
     } finally {
@@ -648,18 +757,22 @@ export class OrderDetailPageComponent {
     }));
   }
 
-  private async loadSuppliers(): Promise<void> {
-    this.suppliersLoading.set(true);
+  private setSupplierPreviewState(
+    supplierId: string,
+    state: SupplierUploadPreviewState
+  ): void {
+    this.supplierPreviewState.update((currentState) => ({
+      ...currentState,
+      [supplierId]: state
+    }));
+  }
 
-    try {
-      const suppliers = await firstValueFrom(this.suppliersService.getSuppliers());
-      this.loadedSuppliers.set(suppliers);
-    } catch (error: unknown) {
-      this.pageError.set(this.toMessage(error, 'Non sono riuscito a caricare i fornitori.'));
-    } finally {
-      this.suppliersFetched.set(true);
-      this.suppliersLoading.set(false);
-    }
+  private clearSupplierPreviewState(supplierId: string): void {
+    this.supplierPreviewState.update((currentState) => {
+      const nextState = { ...currentState };
+      delete nextState[supplierId];
+      return nextState;
+    });
   }
 
   private resolveSuppliers(): SupplierDefinition[] {
@@ -736,49 +849,6 @@ export class OrderDetailPageComponent {
       .sort((left, right) => left.ean.localeCompare(right.ean));
   }
 
-  private startPdfImportPolling(orderId: string): void {
-    this.stopPdfImportPolling();
-
-    this.pdfImportPollingSubscription = timer(2000, 2000)
-      .pipe(
-        switchMap(() => this.ordersService.getImportPdfStatus(orderId)),
-        takeUntilDestroyed(this.destroyRef)
-      )
-      .subscribe({
-        next: (statusResponse) => this.handlePdfImportStatus(orderId, statusResponse),
-        error: (error: unknown) => {
-          this.pdfImportStatus.set('failed');
-          this.pdfImportMessage.set(this.toMessage(error, 'Impossibile verificare lo stato import PDF.'));
-          this.stopPdfImportPolling();
-        }
-      });
-  }
-
-  private handlePdfImportStatus(orderId: string, statusResponse: PdfImportStatusResponse): void {
-    if (statusResponse.status === 'completed') {
-      this.pdfImportStatus.set('completed');
-      this.pdfImportMessage.set(`Import completato: ${statusResponse.itemsCount} prodotti trovati`);
-      this.stopPdfImportPolling();
-      void this.refreshOrderAfterPdfImport(orderId);
-      return;
-    }
-
-    if (statusResponse.status === 'failed') {
-      this.pdfImportStatus.set('failed');
-      this.pdfImportMessage.set(statusResponse.error?.trim() || 'Import PDF non riuscito.');
-      this.stopPdfImportPolling();
-    }
-  }
-
-  private stopPdfImportPolling(): void {
-    if (!this.pdfImportPollingSubscription) {
-      return;
-    }
-
-    this.pdfImportPollingSubscription.unsubscribe();
-    this.pdfImportPollingSubscription = null;
-  }
-
   private scheduleDraftSync(): void {
     this.clearDraftSyncTimeout();
     this.draftSyncTimeoutId = setTimeout(() => {
@@ -796,19 +866,30 @@ export class OrderDetailPageComponent {
     this.draftSyncTimeoutId = null;
   }
 
-  private resetPdfImportFeedback(): void {
-    this.pdfImportStatus.set('idle');
-    this.pdfImportMessage.set(null);
-    this.pdfImportRefreshWarning.set(null);
-  }
-
-  private async refreshOrderAfterPdfImport(orderId: string): Promise<void> {
+  private async refreshOrderAfterGenericImport(
+    orderId: string,
+    importResponse: ImportOrderFileResponse
+  ): Promise<void> {
     try {
       const response = await firstValueFrom(this.ordersService.getOrderById(orderId));
       this.ordersStore.upsertOrder(response.order);
     } catch (error: unknown) {
-      this.pdfImportRefreshWarning.set(
-        'Import completato, ma non sono riuscito ad aggiornare la tabella. Ricarica la pagina.'
+      this.ordersStore.setImportResult(orderId, {
+        status: this.order()?.status,
+        items: this.order()?.items ?? [],
+        reviewItems: [],
+        importResult: {
+          importedItems: importResponse.itemsPreview.map((item) => ({
+            ...item,
+            status: 'IMPORTED'
+          })),
+          rejectedItems: [],
+          importSuccessRate: null,
+          firstImportedItems: importResponse.itemsPreview.slice(0, 5)
+        }
+      });
+      this.pageError.set(
+        'Import completato, ma non sono riuscito a ricaricare il dettaglio ordine. Ricarica la pagina.'
       );
     }
   }

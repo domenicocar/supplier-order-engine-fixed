@@ -1,5 +1,55 @@
 import { SupplierDefinition } from './supplier.models';
 
+export interface WorksheetColumnOption {
+  columnIndex: number;
+  columnLetter: string;
+  label: string;
+}
+
+export interface OrderImportColumnMapping {
+  headerRowIndex: number;
+  eanColumnIndex: number;
+  descriptionColumnIndex: number | null;
+  quantityColumnIndex: number;
+}
+
+export interface SupplierColumnMapping {
+  supplierId: string;
+  headerRowIndex: number;
+  eanColumnIndex: number;
+  descriptionColumnIndex: number;
+  packageSizeColumnIndex: number | null;
+  netPriceColumnIndex: number;
+  grossPriceColumnIndex: number | null;
+  availabilityColumnIndex: number | null;
+  orderQuantityColumnIndex: number | null;
+}
+
+export interface OrderFilePreviewResult {
+  columns: WorksheetColumnOption[];
+  detectedMapping: OrderImportColumnMapping | null;
+  fileType: 'pdf' | 'spreadsheet';
+  headerRowIndex: number | null;
+  itemsCount: number;
+  previewItems: OrderItem[];
+  requiresMapping: boolean;
+}
+
+export interface SupplierUploadPreview {
+  columns: WorksheetColumnOption[];
+  detectedMapping: SupplierColumnMapping | null;
+  headerRowIndex: number | null;
+  importedProductsCount: number;
+  previewRow: {
+    ean: string;
+    description: string;
+    packageSize: number;
+    netPrice: number;
+    grossPrice: number;
+  } | null;
+  savedMapping: SupplierColumnMapping | null;
+}
+
 export interface OrderItem {
   ean: string;
   quantity: number | null;
@@ -64,6 +114,9 @@ export interface SupplierUploadResult {
   fileName: string;
   uploadedAt: string | null;
   message?: string;
+  extension?: string | null;
+  preview?: SupplierUploadPreview | null;
+  storedPath?: string | null;
   files: ExportedFile[];
   products: SupplierUploadProduct[];
 }
@@ -113,6 +166,12 @@ export interface ImportOrderResponse {
   items: OrderItem[];
   reviewItems: ReviewItem[];
   importResult?: OrderImportResult;
+}
+
+export interface ImportOrderFileResponse {
+  importedItems: number;
+  itemsPreview: OrderItem[];
+  status: 'completed';
 }
 
 export interface ExportOrderResponse {

@@ -1,77 +1,125 @@
 import { DatePipe } from '@angular/common';
-import { ChangeDetectionStrategy, Component, computed, input, output } from '@angular/core';
+import {
+  ChangeDetectionStrategy,
+  Component,
+  computed,
+  effect,
+  input,
+  output,
+  signal,
+} from '@angular/core';
+import { FormsModule } from '@angular/forms';
 import { TableModule } from 'primeng/table';
 
-import { PdfImportJobStatus, SessionOrder, SupplierUploadResult } from '../../../models/order.models';
+import {
+  OrderImportColumnMapping,
+  SessionOrder,
+  SupplierColumnMapping,
+  WorksheetColumnOption,
+} from '../../../models/order.models';
 import { SupplierDefinition } from '../../../models/supplier.models';
 import { StatusTagComponent } from '../../../shared/components/status-tag.component';
-import { UploadCardState, UploadCardStatus } from './order-detail-view.models';
+import {
+  OrderImportPreviewState,
+  SupplierUploadPreviewState,
+  UploadCardState,
+  UploadCardStatus,
+} from './order-detail-view.models';
 import { formatRate, severityTone } from './order-detail-view.utils';
+
+type SupplierMappingField =
+  | 'eanColumnIndex'
+  | 'descriptionColumnIndex'
+  | 'packageSizeColumnIndex'
+  | 'netPriceColumnIndex'
+  | 'sharedQuantityColumnIndex';
 
 @Component({
   selector: 'app-order-import-tab',
   standalone: true,
-  imports: [DatePipe, StatusTagComponent, TableModule],
+  imports: [DatePipe, FormsModule, StatusTagComponent, TableModule],
   template: `
     <div class="flex flex-col gap-6">
       <section class="surface-panel p-8">
         <div class="mb-6">
           <p class="section-eyebrow">1. Import ordine</p>
-          <h2 class="section-title">Importazione ordine da PDF</h2>
+          <h2 class="section-title">Importazione ordine da PDF, Excel o CSV</h2>
           <p class="section-copy">
-            Carica il PDF dell'ordine cliente per estrarre EAN e quantita. L'import parte subito
-            alla selezione del file usando
-            <code class="rounded bg-slate-900/5 px-1.5 py-0.5 text-xs text-slate-700">POST /orders/:id/import-pdf</code>.
+            Carica un file ordine. Per i file tabellari mostriamo un'anteprima e
+            ti lasciamo confermare le colonne per EAN, descrizione e quantita
+            prima dell'import definitivo.
           </p>
         </div>
 
         <div class="grid gap-6 lg:grid-cols-2">
           <label
-            [for]="pdfInputId"
-            [class]="uploadCardClass(pdfCardState().status)"
+            [for]="orderFileInputId"
+            [class]="uploadCardClass(orderFileCardState().status)"
             class="group block cursor-pointer rounded-3xl border bg-white p-8 shadow-sm transition duration-200 hover:-translate-y-0.5 hover:shadow-md"
           >
             <input
-              [id]="pdfInputId"
+              [id]="orderFileInputId"
               type="file"
-              accept=".pdf,application/pdf"
+              accept=".pdf,.xls,.xlsx,.csv,application/pdf,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv"
               class="sr-only"
-              [disabled]="pdfCardState().status === 'uploading' || pdfCardState().status === 'processing'"
-              (change)="onPdfFileChange($event)"
+              [disabled]="orderFileUploading() || orderFileImporting()"
+              (change)="onOrderFileChange($event)"
             />
 
-            <div class="flex h-full flex-col items-center justify-center text-center">
-              <div [class]="iconWrapClass(pdfCardState().status)" class="mb-5 flex h-20 w-20 items-center justify-center rounded-full">
-                <i class="pi pi-file-pdf text-3xl"></i>
+            <div
+              class="flex h-full flex-col items-center justify-center text-center"
+            >
+              <div
+                [class]="iconWrapClass(orderFileCardState().status)"
+                class="mb-5 flex h-20 w-20 items-center justify-center rounded-full"
+              >
+                <i class="pi pi-file-import text-3xl"></i>
               </div>
 
-              <h3 class="text-xl font-semibold text-slate-950">Importazione ordine da PDF</h3>
+              <h3 class="text-xl font-semibold text-slate-950">File ordine</h3>
               <p class="mt-3 max-w-md text-sm leading-6 text-slate-500">
-                Carica il PDF dell'ordine cliente per estrarre EAN e quantita.
+                PDF, Excel o CSV. Se il file contiene colonne, potrai confermare
+                il mapping prima di importare.
               </p>
 
-              <div class="mt-6 flex flex-wrap items-center justify-center gap-3">
-                <span [class]="statusBadgeClass(pdfCardState().status)" class="rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-[0.14em]">
-                  {{ statusLabel(pdfCardState().status) }}
+              <div
+                class="mt-6 flex flex-wrap items-center justify-center gap-3"
+              >
+                <span
+                  [class]="statusBadgeClass(orderFileCardState().status)"
+                  class="rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-[0.14em]"
+                >
+                  {{ statusLabel(orderFileCardState().status) }}
                 </span>
-                @if (pdfCardState().fileName) {
-                  <span class="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-medium text-slate-600">
-                    {{ pdfCardState().fileName }}
+                @if (orderFileCardState().fileName) {
+                  <span
+                    class="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-medium text-slate-600"
+                  >
+                    {{ orderFileCardState().fileName }}
                   </span>
                 }
               </div>
 
-              <p class="mt-4 text-sm font-medium" [class]="statusMessageClass(pdfCardState().status)">
-                {{ pdfCardMessage() }}
+              <p
+                class="mt-4 text-sm font-medium"
+                [class]="statusMessageClass(orderFileCardState().status)"
+              >
+                {{ orderFileCardState().message }}
               </p>
             </div>
           </label>
 
-          <div class="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div
+            class="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm"
+          >
             <div class="flex items-center justify-between gap-4">
-              <h3 class="text-base font-semibold text-slate-950">Esito ultima importazione</h3>
+              <h3 class="text-base font-semibold text-slate-950">
+                Esito ultima importazione
+              </h3>
               @if (order().importResult) {
-                <span class="text-sm text-slate-500">{{ order().importResult?.importedItems?.length ?? 0 }} righe</span>
+                <span class="text-sm text-slate-500">
+                  {{ order().importResult?.importedItems?.length ?? 0 }} righe
+                </span>
               }
             </div>
 
@@ -79,30 +127,192 @@ import { formatRate, severityTone } from './order-detail-view.utils';
               <div class="mt-6 grid gap-4 sm:grid-cols-2">
                 <div class="stat-tile">
                   <p class="stat-label">Imported items</p>
-                  <p class="stat-value">{{ importResult.importedItems.length }}</p>
+                  <p class="stat-value">
+                    {{ importResult.importedItems.length }}
+                  </p>
                 </div>
                 <div class="stat-tile">
                   <p class="stat-label">Rejected items</p>
-                  <p class="stat-value">{{ importResult.rejectedItems.length }}</p>
+                  <p class="stat-value">
+                    {{ importResult.rejectedItems.length }}
+                  </p>
                 </div>
                 <div class="stat-tile">
                   <p class="stat-label">Import success rate</p>
-                  <p class="stat-value">{{ formatRate(importResult.importSuccessRate) }}</p>
+                  <p class="stat-value">
+                    {{ formatRate(importResult.importSuccessRate) }}
+                  </p>
                 </div>
                 <div class="stat-tile">
                   <p class="stat-label">First imported items</p>
-                  <p class="stat-value">{{ importResult.firstImportedItems.length }}</p>
+                  <p class="stat-value">
+                    {{ importResult.firstImportedItems.length }}
+                  </p>
                 </div>
               </div>
             } @else {
-              <p class="mt-6 rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-4 text-sm text-slate-500">
-                Nessun PDF importato per questo ordine nella sessione corrente.
+              <p
+                class="mt-6 rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-4 text-sm text-slate-500"
+              >
+                Nessun file ordine importato per questo ordine nella sessione
+                corrente.
               </p>
             }
           </div>
         </div>
 
-        @if (order().importResult; as importResult) {
+        @if (orderImportPreviewState(); as importState) {
+          @if (importState.preview; as preview) {
+            <div
+              class="mt-8 rounded-3xl border border-slate-200 bg-white p-6 shadow-sm"
+            >
+              <div
+                class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between"
+              >
+                <div>
+                  <h3 class="text-base font-semibold text-slate-950">
+                    Conferma colonne
+                  </h3>
+                  <p class="mt-1 text-sm text-slate-500">
+                    {{
+                      preview.fileType === 'pdf'
+                        ? 'Anteprima import PDF. Conferma per salvare i prodotti nel draft.'
+                        : 'Controlla il mapping delle colonne prima di importare.'
+                    }}
+                  </p>
+                </div>
+                <div class="text-sm text-slate-500">
+                  {{ preview.itemsCount }} prodotti leggibili
+                </div>
+              </div>
+
+              @if (preview.fileType === 'spreadsheet') {
+                <div class="mt-6 grid gap-4 lg:grid-cols-3">
+                  <div>
+                    <label class="mb-2 block text-sm font-medium text-slate-700"
+                      >EAN</label
+                    >
+                    <select
+                      class="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-700"
+                      [ngModel]="orderDraftMapping()?.eanColumnIndex ?? -1"
+                      (ngModelChange)="
+                        onOrderMappingChange('eanColumnIndex', $event)
+                      "
+                    >
+                      @for (
+                        option of preview.columns;
+                        track option.columnIndex
+                      ) {
+                        <option [ngValue]="option.columnIndex">
+                          {{ columnLabel(option) }}
+                        </option>
+                      }
+                    </select>
+                  </div>
+
+                  <div>
+                    <label class="mb-2 block text-sm font-medium text-slate-700"
+                      >Descrizione</label
+                    >
+                    <select
+                      class="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-700"
+                      [ngModel]="
+                        orderDraftMapping()?.descriptionColumnIndex ?? -1
+                      "
+                      (ngModelChange)="
+                        onOrderMappingChange('descriptionColumnIndex', $event)
+                      "
+                    >
+                      <option [ngValue]="-1">Nessuna</option>
+                      @for (
+                        option of preview.columns;
+                        track option.columnIndex
+                      ) {
+                        <option [ngValue]="option.columnIndex">
+                          {{ columnLabel(option) }}
+                        </option>
+                      }
+                    </select>
+                  </div>
+
+                  <div>
+                    <label class="mb-2 block text-sm font-medium text-slate-700"
+                      >Quantita</label
+                    >
+                    <select
+                      class="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-700"
+                      [ngModel]="orderDraftMapping()?.quantityColumnIndex ?? -1"
+                      (ngModelChange)="
+                        onOrderMappingChange('quantityColumnIndex', $event)
+                      "
+                    >
+                      @for (
+                        option of preview.columns;
+                        track option.columnIndex
+                      ) {
+                        <option [ngValue]="option.columnIndex">
+                          {{ columnLabel(option) }}
+                        </option>
+                      }
+                    </select>
+                  </div>
+                </div>
+              }
+
+              <div
+                class="mt-6 overflow-hidden rounded-2xl border border-slate-200"
+              >
+                <p-table
+                  [value]="preview.previewItems"
+                  responsiveLayout="scroll"
+                >
+                  <ng-template pTemplate="header">
+                    <tr>
+                      <th>EAN</th>
+                      <th>Descrizione</th>
+                      <th>Quantita</th>
+                    </tr>
+                  </ng-template>
+                  <ng-template pTemplate="body" let-item>
+                    <tr>
+                      <td>{{ item.ean }}</td>
+                      <td>{{ item.description || '-' }}</td>
+                      <td>{{ item.quantity ?? '-' }}</td>
+                    </tr>
+                  </ng-template>
+                </p-table>
+              </div>
+
+              <div
+                class="mt-6 flex flex-wrap items-center justify-between gap-3"
+              >
+                <p class="text-sm text-slate-500">
+                  @if (preview.fileType === 'pdf') {
+                    Nessuna colonna da mappare: puoi confermare direttamente
+                    l'import.
+                  } @else {
+                    Puoi modificare il mapping se il rilevamento automatico non
+                    e corretto.
+                  }
+                </p>
+                <button
+                  type="button"
+                  class="rounded-2xl bg-slate-950 px-5 py-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+                  [disabled]="!canConfirmOrderImport() || orderFileImporting()"
+                  (click)="confirmOrderImport()"
+                >
+                  {{
+                    orderFileImporting()
+                      ? 'Import in corso...'
+                      : 'Conferma import'
+                  }}
+                </button>
+              </div>
+            </div>
+          }
+        }
+
+        <!-- @if (order().importResult; as importResult) {
           <div class="mt-8 grid gap-6 xl:grid-cols-2">
             <div class="rounded-3xl border border-slate-200 bg-white p-5">
               <div class="flex items-center justify-between gap-4">
@@ -161,179 +371,666 @@ import { formatRate, severityTone } from './order-detail-view.utils';
               </div>
             </div>
           </div>
-
-          @if (importResult.firstImportedItems.length > 0) {
-            <div class="mt-6 flex flex-wrap gap-2">
-              @for (item of importResult.firstImportedItems; track item.ean) {
-                <span class="rounded-full border border-cyan-200 bg-cyan-50 px-3 py-2 text-sm font-medium text-cyan-800">
-                  {{ item.ean }} · {{ item.quantity ?? '-' }}
-                </span>
-              }
-            </div>
-          }
-        }
+        } -->
       </section>
 
       <section class="surface-panel p-8">
         <div class="mb-6">
           <p class="section-eyebrow">2. Fornitori</p>
-          <h2 class="section-title">Upload listini fornitori</h2>
+          <h2 class="section-title">Fornitori dinamici e listini</h2>
           <p class="section-copy">
-            Ogni card usa il supplier ricevuto dal parent e avvia subito
-            <code class="rounded bg-slate-900/5 px-1.5 py-0.5 text-xs text-slate-700">POST /suppliers/:supplierId/files</code>
-            alla selezione del file.
+            Puoi aggiungere fornitori al volo e, per ogni file caricato,
+            confermare il mapping di EAN, descrizione, prezzo netto, pack size,
+            disponibilita e colonna ordine.
           </p>
         </div>
 
+        <div class="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div
+            class="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,16rem)_auto]"
+          >
+            <div>
+              <label class="mb-2 block text-sm font-medium text-slate-700"
+                >Nome fornitore</label
+              >
+              <input
+                type="text"
+                [(ngModel)]="newSupplierName"
+                placeholder="Es. Pagano"
+                class="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-700"
+              />
+            </div>
+            <div>
+              <label class="mb-2 block text-sm font-medium text-slate-700"
+                >Codice</label
+              >
+              <input
+                type="text"
+                [(ngModel)]="newSupplierCode"
+                placeholder="Es. PAGANO"
+                class="w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-700"
+              />
+            </div>
+            <div class="flex items-end">
+              <button
+                type="button"
+                class="w-full rounded-2xl bg-slate-950 px-5 py-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+                [disabled]="
+                  supplierCreating() || newSupplierName.trim().length === 0
+                "
+                (click)="createSupplier()"
+              >
+                {{ supplierCreating() ? 'Creazione...' : 'Aggiungi fornitore' }}
+              </button>
+            </div>
+          </div>
+        </div>
+
         @if (suppliers().length === 0) {
-          <div class="rounded-3xl border border-dashed border-slate-300 bg-slate-50 px-6 py-8 text-center text-sm text-slate-500">
-            Nessun fornitore configurato. Aggiungi un fornitore per caricare il listino.
+          <div
+            class="mt-6 rounded-3xl border border-dashed border-slate-300 bg-slate-50 px-6 py-8 text-center text-sm text-slate-500"
+          >
+            Nessun fornitore configurato. Aggiungine uno per caricare il primo
+            listino.
           </div>
         } @else {
-          <div class="grid gap-6 md:grid-cols-2 2xl:grid-cols-3">
+          <div class="mt-6 grid gap-6 md:grid-cols-2 2xl:grid-cols-3">
             @for (supplier of suppliers(); track supplier.id) {
-              <label
-                [for]="supplierInputId(supplier.id)"
-                [class]="uploadCardClass(supplierCardState(supplier.id).status)"
-                class="group block cursor-pointer rounded-3xl border bg-white p-8 shadow-sm transition duration-200 hover:-translate-y-0.5 hover:shadow-md"
+              <div
+                class="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm"
               >
-                <input
-                  [id]="supplierInputId(supplier.id)"
-                  type="file"
-                  accept=".xls,.xlsx,.csv,.pdf,application/pdf,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv"
-                  class="sr-only"
-                  [disabled]="supplierCardState(supplier.id).status === 'uploading'"
-                  (change)="onSupplierFileChange(supplier.id, $event)"
-                />
+                <label
+                  [for]="supplierInputId(supplier.id)"
+                  [class]="
+                    uploadCardClass(supplierCardState(supplier.id).status)
+                  "
+                  class="group block cursor-pointer rounded-3xl border bg-white p-6 transition duration-200 hover:-translate-y-0.5 hover:shadow-md"
+                >
+                  <input
+                    [id]="supplierInputId(supplier.id)"
+                    type="file"
+                    accept=".xls,.xlsx,.csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv"
+                    class="sr-only"
+                    [disabled]="
+                      supplierCardState(supplier.id).status === 'uploading'
+                    "
+                    (change)="onSupplierFileChange(supplier.id, $event)"
+                  />
 
-                <div class="flex h-full flex-col items-center text-center">
-                  <div [class]="iconWrapClass(supplierCardState(supplier.id).status)" class="mb-5 flex h-20 w-20 items-center justify-center rounded-full">
-                    <i class="pi pi-upload text-3xl"></i>
-                  </div>
+                  <div class="flex h-full flex-col items-center text-center">
+                    <div
+                      [class]="
+                        iconWrapClass(supplierCardState(supplier.id).status)
+                      "
+                      class="mb-5 flex h-20 w-20 items-center justify-center rounded-full"
+                    >
+                      <i class="pi pi-upload text-3xl"></i>
+                    </div>
 
-                  <h3 class="text-xl font-semibold text-slate-950">{{ supplier.name }}</h3>
-                  <p class="mt-1 text-xs uppercase tracking-[0.16em] text-slate-400">
-                    {{ supplier.id }}
-                  </p>
-                  <p class="mt-3 max-w-md text-sm leading-6 text-slate-500">
-                    Carica listino o file fornitore. L'upload e indipendente dagli altri fornitori.
-                  </p>
+                    <h3 class="text-xl font-semibold text-slate-950">
+                      {{ supplier.name }}
+                    </h3>
+                    <p
+                      class="mt-1 text-xs uppercase tracking-[0.16em] text-slate-400"
+                    >
+                      {{ supplier.code || supplier.id }}
+                    </p>
+                    <p class="mt-3 text-sm leading-6 text-slate-500">
+                      Carica il file fornitore e conferma le colonne prima di
+                      usarlo nei confronti.
+                    </p>
 
-                  <div class="mt-6 flex flex-wrap items-center justify-center gap-3">
-                    <span [class]="statusBadgeClass(supplierCardState(supplier.id).status)" class="rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-[0.14em]">
-                      {{ statusLabel(supplierCardState(supplier.id).status) }}
-                    </span>
-                    @if (supplierCardState(supplier.id).fileName) {
-                      <span class="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-medium text-slate-600">
-                        {{ supplierCardState(supplier.id).fileName }}
+                    <div
+                      class="mt-6 flex flex-wrap items-center justify-center gap-3"
+                    >
+                      <span
+                        [class]="
+                          statusBadgeClass(
+                            supplierCardState(supplier.id).status
+                          )
+                        "
+                        class="rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-[0.14em]"
+                      >
+                        {{ statusLabel(supplierCardState(supplier.id).status) }}
                       </span>
+                      @if (supplierCardState(supplier.id).fileName) {
+                        <span
+                          class="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-medium text-slate-600"
+                        >
+                          {{ supplierCardState(supplier.id).fileName }}
+                        </span>
+                      }
+                    </div>
+
+                    <p
+                      class="mt-4 text-sm font-medium"
+                      [class]="
+                        statusMessageClass(
+                          supplierCardState(supplier.id).status
+                        )
+                      "
+                    >
+                      {{ supplierCardMessage(supplier.id) }}
+                    </p>
+
+                    @if (supplierCardState(supplier.id).updatedAt) {
+                      <p class="mt-2 text-xs text-slate-400">
+                        Ultimo aggiornamento
+                        {{
+                          supplierCardState(supplier.id).updatedAt
+                            | date: 'dd/MM/yyyy HH:mm'
+                        }}
+                      </p>
                     }
                   </div>
+                </label>
 
-                  <p class="mt-4 text-sm font-medium" [class]="statusMessageClass(supplierCardState(supplier.id).status)">
-                    {{ supplierCardMessage(supplier.id) }}
-                  </p>
+                @if (supplierPreviewState()[supplier.id]; as previewState) {
+                  @if (previewState.preview; as preview) {
+                    <div
+                      class="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4"
+                    >
+                      <h4 class="text-sm font-semibold text-slate-950">
+                        Conferma colonne
+                      </h4>
+                      <div class="mt-4 grid gap-3">
+                        <div class="grid gap-3 sm:grid-cols-2">
+                          <div>
+                            <label
+                              class="mb-1 block text-xs font-medium uppercase tracking-[0.14em] text-slate-500"
+                              >EAN</label
+                            >
+                            <select
+                              class="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700"
+                              [ngModel]="
+                                supplierDraftMapping(supplier.id)
+                                  ?.eanColumnIndex ?? -1
+                              "
+                              (ngModelChange)="
+                                onSupplierMappingChange(
+                                  supplier.id,
+                                  'eanColumnIndex',
+                                  $event
+                                )
+                              "
+                            >
+                              @for (
+                                option of preview.columns;
+                                track option.columnIndex
+                              ) {
+                                <option [ngValue]="option.columnIndex">
+                                  {{ columnLabel(option) }}
+                                </option>
+                              }
+                            </select>
+                          </div>
+                          <div>
+                            <label
+                              class="mb-1 block text-xs font-medium uppercase tracking-[0.14em] text-slate-500"
+                              >Descrizione</label
+                            >
+                            <select
+                              class="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700"
+                              [ngModel]="
+                                supplierDraftMapping(supplier.id)
+                                  ?.descriptionColumnIndex ?? -1
+                              "
+                              (ngModelChange)="
+                                onSupplierMappingChange(
+                                  supplier.id,
+                                  'descriptionColumnIndex',
+                                  $event
+                                )
+                              "
+                            >
+                              @for (
+                                option of preview.columns;
+                                track option.columnIndex
+                              ) {
+                                <option [ngValue]="option.columnIndex">
+                                  {{ columnLabel(option) }}
+                                </option>
+                              }
+                            </select>
+                          </div>
+                          <div>
+                            <label
+                              class="mb-1 block text-xs font-medium uppercase tracking-[0.14em] text-slate-500"
+                              >Prezzo netto</label
+                            >
+                            <select
+                              class="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700"
+                              [ngModel]="
+                                supplierDraftMapping(supplier.id)
+                                  ?.netPriceColumnIndex ?? -1
+                              "
+                              (ngModelChange)="
+                                onSupplierMappingChange(
+                                  supplier.id,
+                                  'netPriceColumnIndex',
+                                  $event
+                                )
+                              "
+                            >
+                              @for (
+                                option of preview.columns;
+                                track option.columnIndex
+                              ) {
+                                <option [ngValue]="option.columnIndex">
+                                  {{ columnLabel(option) }}
+                                </option>
+                              }
+                            </select>
+                          </div>
+                          <div>
+                            <label
+                              class="mb-1 block text-xs font-medium uppercase tracking-[0.14em] text-slate-500"
+                              >Pack size</label
+                            >
+                            <select
+                              class="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700"
+                              [ngModel]="
+                                supplierDraftMapping(supplier.id)
+                                  ?.packageSizeColumnIndex ?? -1
+                              "
+                              (ngModelChange)="
+                                onSupplierMappingChange(
+                                  supplier.id,
+                                  'packageSizeColumnIndex',
+                                  $event
+                                )
+                              "
+                            >
+                              <option [ngValue]="-1">Nessuna</option>
+                              @for (
+                                option of preview.columns;
+                                track option.columnIndex
+                              ) {
+                                <option [ngValue]="option.columnIndex">
+                                  {{ columnLabel(option) }}
+                                </option>
+                              }
+                            </select>
+                          </div>
+                          <div>
+                            <label
+                              class="mb-1 block text-xs font-medium uppercase tracking-[0.14em] text-slate-500"
+                              >Qta / Ordine</label
+                            >
+                            <select
+                              class="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700"
+                              [ngModel]="sharedQuantityColumnIndex(supplier.id)"
+                              (ngModelChange)="
+                                onSupplierMappingChange(
+                                  supplier.id,
+                                  'sharedQuantityColumnIndex',
+                                  $event
+                                )
+                              "
+                            >
+                              <option [ngValue]="-1">Nessuna</option>
+                              @for (
+                                option of preview.columns;
+                                track option.columnIndex
+                              ) {
+                                <option [ngValue]="option.columnIndex">
+                                  {{ columnLabel(option) }}
+                                </option>
+                              }
+                            </select>
+                          </div>
+                        </div>
 
-                  @if (supplierCardState(supplier.id).updatedAt) {
-                    <p class="mt-2 text-xs text-slate-400">
-                      Ultimo aggiornamento {{ supplierCardState(supplier.id).updatedAt | date: 'dd/MM/yyyy HH:mm' }}
-                    </p>
+                        <div
+                          class="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600"
+                        >
+                          @if (preview.previewRow) {
+                            <p>
+                              <strong>EAN:</strong> {{ preview.previewRow.ean }}
+                            </p>
+                            <p>
+                              <strong>Descrizione:</strong>
+                              {{ preview.previewRow.description }}
+                            </p>
+                            <p>
+                              <strong>Prezzo netto:</strong>
+                              {{ preview.previewRow.netPrice }}
+                            </p>
+                          } @else {
+                            <p>
+                              Nessuna riga leggibile con il mapping attuale.
+                            </p>
+                          }
+                          <p class="mt-2 text-xs text-slate-500">
+                            {{ preview.importedProductsCount }} prodotti letti.
+                          </p>
+                        </div>
+
+                        @if (previewState.error) {
+                          <div
+                            class="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700"
+                          >
+                            {{ previewState.error }}
+                          </div>
+                        }
+
+                        <div class="flex justify-end">
+                          <button
+                            type="button"
+                            class="rounded-2xl bg-slate-950 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+                            [disabled]="
+                              !canConfirmSupplierMapping(supplier.id) ||
+                              previewState.confirming
+                            "
+                            (click)="confirmSupplierMapping(supplier.id)"
+                          >
+                            {{
+                              previewState.confirming
+                                ? 'Salvataggio...'
+                                : 'Conferma mapping'
+                            }}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
                   }
-                </div>
-              </label>
+                }
+              </div>
             }
           </div>
         }
       </section>
     </div>
   `,
-  changeDetection: ChangeDetectionStrategy.OnPush
+  changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class OrderImportTabComponent {
   readonly order = input.required<SessionOrder>();
   readonly suppliers = input.required<SupplierDefinition[]>();
-  readonly selectedPdfFile = input<File | null>(null);
-  readonly lastPdfFileName = input<string | null>(null);
-  readonly pdfUploading = input(false);
-  readonly pdfImportStatus = input<PdfImportJobStatus>('idle');
-  readonly pdfImportMessage = input<string | null>(null);
-  readonly pdfImportRefreshWarning = input<string | null>(null);
+  readonly orderImportPreviewState = input<OrderImportPreviewState | null>(
+    null,
+  );
+  readonly orderFileUploading = input(false);
+  readonly orderFileImporting = input(false);
+  readonly orderFileMessage = input<string | null>(null);
   readonly supplierUploadState = input<Record<string, UploadCardState>>({});
+  readonly supplierPreviewState = input<
+    Record<string, SupplierUploadPreviewState>
+  >({});
+  readonly supplierCreating = input(false);
 
-  readonly pdfUploadRequested = output<File>();
+  readonly orderFileSelected = output<File>();
+  readonly orderImportConfirmed = output<{
+    file: File;
+    mapping: OrderImportColumnMapping | null;
+  }>();
   readonly supplierFileSelected = output<{ supplierId: string; file: File }>();
+  readonly supplierMappingConfirmed = output<{
+    supplierId: string;
+    file: File;
+    mapping: SupplierColumnMapping | null;
+  }>();
+  readonly supplierCreateRequested = output<{
+    name: string;
+    code?: string | null;
+  }>();
 
   readonly formatRate = formatRate;
   readonly severityTone = severityTone;
-  readonly pdfInputId = 'order-pdf-upload-input';
+  readonly orderFileInputId = 'order-import-upload-input';
 
-  readonly pdfCardState = computed<UploadCardState>(() => {
-    if (this.pdfUploading()) {
+  readonly orderDraftMapping = signal<OrderImportColumnMapping | null>(null);
+  readonly supplierDraftMappings = signal<
+    Record<string, SupplierColumnMapping | null>
+  >({});
+
+  newSupplierName = '';
+  newSupplierCode = '';
+
+  readonly orderFileCardState = computed<UploadCardState>(() => {
+    const previewState = this.orderImportPreviewState();
+    const fileName = previewState?.file?.name ?? null;
+
+    if (this.orderFileUploading()) {
       return {
         status: 'uploading',
-        fileName: this.selectedPdfFile()?.name ?? null,
-        message: 'Upload del PDF in corso...'
+        fileName,
+        message: 'Analisi del file in corso...',
       };
     }
 
-    if (this.pdfImportStatus() === 'processing') {
+    if (this.orderFileImporting()) {
       return {
         status: 'processing',
-        fileName: this.selectedPdfFile()?.name ?? null,
+        fileName,
+        message: this.orderFileMessage() || 'Importazione in corso...',
+      };
+    }
+
+    if (previewState?.preview) {
+      return {
+        status: 'processing',
+        fileName,
         message:
-          this.pdfImportMessage() ||
-          'PDF ricevuto. Elaborazione in corso, i prodotti verranno aggiornati a breve.'
-      };
-    }
-
-    if (this.pdfImportStatus() === 'completed') {
-      return {
-        status: 'completed',
-        fileName: this.selectedPdfFile()?.name ?? this.lastPdfFileName(),
-        message: this.pdfImportMessage() || 'Importazione completata con successo.'
-      };
-    }
-
-    if (this.pdfImportStatus() === 'failed') {
-      return {
-        status: 'failed',
-        fileName: this.selectedPdfFile()?.name ?? this.lastPdfFileName(),
-        message: this.pdfImportMessage() || 'Importazione non riuscita.'
+          this.orderFileMessage() ||
+          (previewState.preview.requiresMapping
+            ? "Conferma il mapping delle colonne per completare l'import."
+            : 'Anteprima pronta. Conferma per importare.'),
       };
     }
 
     return {
       status: 'idle',
-      fileName: this.selectedPdfFile()?.name ?? this.lastPdfFileName(),
-      message: 'Seleziona un PDF per avviare subito l\'importazione.'
+      fileName,
+      message:
+        this.orderFileMessage() || 'Seleziona un file ordine per iniziare.',
     };
   });
 
-  readonly pdfCardMessage = computed(() =>
-    this.pdfImportRefreshWarning() || this.pdfCardState().message || 'Seleziona un PDF per iniziare.'
-  );
+  constructor() {
+    effect(
+      () => {
+        const previewState = this.orderImportPreviewState();
+        const preview = previewState?.preview;
 
-  onPdfFileChange(event: Event): void {
-    const input = event.target as HTMLInputElement;
-    const file = input.files?.[0] ?? null;
+        if (!preview) {
+          this.orderDraftMapping.set(null);
+          return;
+        }
+
+        this.orderDraftMapping.set(
+          preview.detectedMapping
+            ? { ...preview.detectedMapping }
+            : {
+                headerRowIndex: preview.headerRowIndex ?? 0,
+                eanColumnIndex: preview.columns[0]?.columnIndex ?? 0,
+                descriptionColumnIndex: preview.columns[1]?.columnIndex ?? null,
+                quantityColumnIndex: preview.columns[2]?.columnIndex ?? 0,
+              },
+        );
+      },
+      { allowSignalWrites: true },
+    );
+
+    effect(
+      () => {
+        const previewState = this.supplierPreviewState();
+        const nextMappings: Record<string, SupplierColumnMapping | null> = {};
+
+        for (const [supplierId, state] of Object.entries(previewState)) {
+          const preview = state.preview;
+
+          if (!preview) {
+            nextMappings[supplierId] = null;
+            continue;
+          }
+
+          nextMappings[supplierId] = state.mapping ??
+            preview.detectedMapping ?? {
+              supplierId,
+              headerRowIndex: preview.headerRowIndex ?? 0,
+              eanColumnIndex: preview.columns[0]?.columnIndex ?? 0,
+              descriptionColumnIndex: preview.columns[1]?.columnIndex ?? 0,
+              packageSizeColumnIndex: null,
+              netPriceColumnIndex: preview.columns[2]?.columnIndex ?? 0,
+              grossPriceColumnIndex: null,
+              availabilityColumnIndex: null,
+              orderQuantityColumnIndex: null,
+            };
+        }
+
+        this.supplierDraftMappings.set(nextMappings);
+      },
+      { allowSignalWrites: true },
+    );
+  }
+
+  onOrderFileChange(event: Event): void {
+    const inputElement = event.target as HTMLInputElement;
+    const file = inputElement.files?.[0] ?? null;
 
     if (file) {
-      console.log('[OrderImportTab] selected file name', file.name);
-      this.pdfUploadRequested.emit(file);
+      this.orderFileSelected.emit(file);
     }
 
-    input.value = '';
+    inputElement.value = '';
   }
 
   onSupplierFileChange(supplierId: string, event: Event): void {
-    const input = event.target as HTMLInputElement;
-    const file = input.files?.[0] ?? null;
+    const inputElement = event.target as HTMLInputElement;
+    const file = inputElement.files?.[0] ?? null;
 
     if (file) {
       this.supplierFileSelected.emit({ supplierId, file });
     }
 
-    input.value = '';
+    inputElement.value = '';
+  }
+
+  createSupplier(): void {
+    const name = this.newSupplierName.trim();
+    const code = this.newSupplierCode.trim();
+
+    if (!name) {
+      return;
+    }
+
+    this.supplierCreateRequested.emit({
+      name,
+      code: code.length > 0 ? code : null,
+    });
+    this.newSupplierName = '';
+    this.newSupplierCode = '';
+  }
+
+  onOrderMappingChange(
+    field: 'eanColumnIndex' | 'descriptionColumnIndex' | 'quantityColumnIndex',
+    rawValue: number,
+  ): void {
+    const currentMapping = this.orderDraftMapping();
+
+    if (!currentMapping) {
+      return;
+    }
+
+    this.orderDraftMapping.set({
+      ...currentMapping,
+      [field]:
+        field === 'descriptionColumnIndex' && rawValue < 0
+          ? null
+          : Number(rawValue),
+    });
+  }
+
+  confirmOrderImport(): void {
+    const previewState = this.orderImportPreviewState();
+
+    if (!previewState?.file) {
+      return;
+    }
+
+    this.orderImportConfirmed.emit({
+      file: previewState.file,
+      mapping: previewState.preview?.requiresMapping
+        ? this.orderDraftMapping()
+        : null,
+    });
+  }
+
+  onSupplierMappingChange(
+    supplierId: string,
+    field: SupplierMappingField,
+    rawValue: number,
+  ): void {
+    const currentMapping = this.supplierDraftMapping(supplierId);
+
+    if (!currentMapping) {
+      return;
+    }
+
+    const value = rawValue < 0 ? null : Number(rawValue);
+    this.supplierDraftMappings.update((state) => ({
+      ...state,
+      [supplierId]:
+        field === 'sharedQuantityColumnIndex'
+          ? {
+              ...currentMapping,
+              availabilityColumnIndex: value,
+              orderQuantityColumnIndex: value,
+            }
+          : {
+              ...currentMapping,
+              [field]: value,
+            },
+    }));
+  }
+
+  confirmSupplierMapping(supplierId: string): void {
+    const previewState = this.supplierPreviewState()[supplierId];
+    const mapping = this.supplierDraftMapping(supplierId);
+
+    if (!previewState?.file || !mapping) {
+      return;
+    }
+
+    this.supplierMappingConfirmed.emit({
+      supplierId,
+      file: previewState.file,
+      mapping: {
+        ...mapping,
+        supplierId,
+      },
+    });
+  }
+
+  canConfirmOrderImport(): boolean {
+    const preview = this.orderImportPreviewState()?.preview;
+
+    if (!preview) {
+      return false;
+    }
+
+    if (preview.fileType === 'pdf') {
+      return true;
+    }
+
+    const mapping = this.orderDraftMapping();
+    return (
+      !!mapping &&
+      mapping.eanColumnIndex >= 0 &&
+      mapping.quantityColumnIndex >= 0
+    );
+  }
+
+  canConfirmSupplierMapping(supplierId: string): boolean {
+    const mapping = this.supplierDraftMapping(supplierId);
+
+    return !!(
+      mapping &&
+      mapping.eanColumnIndex >= 0 &&
+      mapping.descriptionColumnIndex >= 0 &&
+      mapping.netPriceColumnIndex >= 0
+    );
   }
 
   supplierInputId(supplierId: string): string {
@@ -354,19 +1051,41 @@ export class OrderImportTabComponent {
         status: 'completed',
         fileName: latestUpload.fileName,
         message: latestUpload.message || 'Ultimo upload completato.',
-        updatedAt: latestUpload.uploadedAt
+        updatedAt: latestUpload.uploadedAt,
       };
     }
 
     return {
       status: 'idle',
       fileName: null,
-      message: 'Seleziona un file per caricare subito il listino di questo fornitore.'
+      message: 'Seleziona un file per caricare il listino di questo fornitore.',
     };
   }
 
   supplierCardMessage(supplierId: string): string {
-    return this.supplierCardState(supplierId).message || 'Seleziona un file per iniziare.';
+    return (
+      this.supplierCardState(supplierId).message ||
+      'Seleziona un file per iniziare.'
+    );
+  }
+
+  supplierDraftMapping(supplierId: string): SupplierColumnMapping | null {
+    return this.supplierDraftMappings()[supplierId] ?? null;
+  }
+
+  sharedQuantityColumnIndex(supplierId: string): number {
+    const mapping = this.supplierDraftMapping(supplierId);
+    return (
+      mapping?.orderQuantityColumnIndex ??
+      mapping?.availabilityColumnIndex ??
+      -1
+    );
+  }
+
+  columnLabel(option: WorksheetColumnOption): string {
+    const label =
+      option.label.trim().length > 0 ? option.label : 'Colonna senza nome';
+    return `${option.columnLetter} - ${label}`;
   }
 
   uploadCardClass(status: UploadCardStatus): string {
@@ -438,7 +1157,7 @@ export class OrderImportTabComponent {
       case 'uploading':
         return 'uploading';
       case 'processing':
-        return 'processing';
+        return 'preview';
       case 'completed':
         return 'completed';
       case 'failed':
@@ -448,7 +1167,7 @@ export class OrderImportTabComponent {
     }
   }
 
-  private latestSupplierUpload(supplierId: string): SupplierUploadResult | undefined {
+  private latestSupplierUpload(supplierId: string) {
     const uploads = this.order().supplierUploads[supplierId] ?? [];
     return uploads.at(-1);
   }

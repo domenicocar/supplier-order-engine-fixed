@@ -7,6 +7,9 @@ import {
   ExportOrderResponse,
   ExportedFile,
   GetOrderResponse,
+  ImportOrderFileResponse,
+  OrderFilePreviewResult,
+  OrderImportColumnMapping,
   ImportOrderResponse,
   OrderExportResult,
   OrderImportResult,
@@ -14,6 +17,8 @@ import {
   PdfImportJobStatus,
   PdfImportStatusResponse,
   ReviewItem,
+  SupplierUploadPreview,
+  SupplierColumnMapping,
   SessionOrder,
   SupplierComparisonOffer,
   SupplierComparisonResponse,
@@ -72,9 +77,51 @@ export class OrdersService {
     );
   }
 
+  previewOrderFile(orderId: string, file: File): Observable<OrderFilePreviewResult> {
+    const formData = new FormData();
+    formData.append('file', file);
+
+    return this.api
+      .postFormData<unknown>(`/orders/${orderId}/import-file/preview`, formData)
+      .pipe(map((payload) => this.normalizeOrderFilePreview(payload)));
+  }
+
+  importOrderFile(
+    orderId: string,
+    file: File,
+    mapping?: OrderImportColumnMapping | null
+  ): Observable<ImportOrderFileResponse> {
+    const formData = new FormData();
+    formData.append('file', file);
+
+    if (mapping) {
+      formData.append('mapping', JSON.stringify(mapping));
+    }
+
+    return this.api
+      .postFormData<unknown>(`/orders/${orderId}/import-file`, formData)
+      .pipe(map((payload) => this.normalizeImportOrderFileResponse(payload)));
+  }
+
   getSupplierComparison(orderId: string): Observable<SupplierComparisonResponse> {
     return this.api.get<unknown>(`/orders/${orderId}/supplier-comparison`).pipe(
       map((payload) => this.normalizeSupplierComparisonResponse(payload))
+    );
+  }
+
+  createOrderSupplier(
+    orderId: string,
+    payload: SupplierDefinition | { name: string; code?: string | null; active?: boolean }
+  ): Observable<SupplierDefinition> {
+    return this.api.post<unknown>(`/orders/${orderId}/suppliers`, payload).pipe(
+      map((response) => {
+        const supplier = this.normalizeSupplierDefinition(response);
+        return supplier ?? {
+          id: payload.name,
+          name: payload.name,
+          code: payload.code ?? null
+        };
+      })
     );
   }
 
@@ -108,25 +155,52 @@ export class OrdersService {
     );
   }
 
-  uploadSupplierFile(supplierId: string, file: File): Observable<SupplierUploadResult> {
+  uploadSupplierFile(
+    orderId: string,
+    supplierId: string,
+    file: File,
+    options?: {
+      mapping?: SupplierColumnMapping | null;
+      persistMapping?: boolean;
+    }
+  ): Observable<SupplierUploadResult> {
     const formData = new FormData();
     formData.append('file', file);
 
+    if (options?.mapping) {
+      formData.append('mapping', JSON.stringify(options.mapping));
+    }
+
+    if (typeof options?.persistMapping === 'boolean') {
+      formData.append('persistMapping', String(options.persistMapping));
+    }
+
     return this.api
-      .postFormData<unknown>(`/suppliers/${supplierId}/files`, formData)
+      .postFormData<unknown>(`/orders/${orderId}/suppliers/${supplierId}/file`, formData)
       .pipe(
         map((payload) => {
           const source = this.unwrap(payload);
+          const preview = this.normalizeSupplierUploadPreview(
+            this.pickValue(source, ['preview'])
+          );
+          const status = this.pickString(source, ['status']);
+          const mappingSaved = !!preview?.savedMapping;
+          const requiresConfirmation = !!preview && !mappingSaved;
 
           return {
             supplierId,
             fileName:
               this.pickString(source, ['originalFileName', 'fileName', 'filename']) ?? file.name,
             uploadedAt: new Date().toISOString(),
+            extension: this.pickString(source, ['extension']) ?? null,
+            storedPath: this.pickString(source, ['storedPath', 'stored_path']) ?? null,
             message:
-              this.pickString(source, ['status']) === 'uploaded'
-                ? 'Upload completato'
-                : this.pickString(source, ['message', 'status', 'result']) ?? 'Upload completato',
+              requiresConfirmation
+                ? 'File caricato. Conferma le colonne per salvare il mapping.'
+                : mappingSaved || status === 'uploaded'
+                  ? 'Upload completato'
+                  : this.pickString(source, ['message', 'status', 'result']) ?? 'Upload completato',
+            preview,
             files: [],
             products: []
           };
@@ -142,6 +216,9 @@ export class OrdersService {
       this.pickString(orderSource, ['status']) ??
       this.pickString(source, ['status']) ??
       'CREATED';
+    const importedItemDetails = this.normalizeItems(
+      this.pickValue(orderSource, ['importedItemDetails', 'imported_item_details'])
+    );
 
     return {
       id,
@@ -167,7 +244,27 @@ export class OrdersService {
       supplierComparisonRows: this.normalizeSupplierComparisonRows(
         this.pickValue(orderSource, ['supplierComparisonRows', 'supplier_comparison_rows'])
       ),
-      supplierUploads: {}
+      importResult:
+      importedItemDetails.length > 0
+          ? {
+              importedItems: importedItemDetails,
+              rejectedItems: [],
+              importSuccessRate: null,
+              firstImportedItems: importedItemDetails.slice(0, 5)
+            }
+          : undefined,
+      supplierUploads: this.normalizeSupplierUploadsFromSuppliers(
+        this.normalizeSuppliers(
+          this.pickValue(orderSource, [
+            'suppliers',
+            'supplierList',
+            'vendors',
+            'providers',
+            'fornitori'
+          ]) ??
+            this.pickValue(source, ['suppliers', 'supplierList', 'vendors', 'providers', 'fornitori'])
+        )
+      )
     };
   }
 
@@ -219,6 +316,37 @@ export class OrdersService {
             ? importResult.firstImportedItems
             : importedItems.slice(0, 5)
       }
+    };
+  }
+
+  private normalizeOrderFilePreview(payload: unknown): OrderFilePreviewResult {
+    const source = this.unwrap(payload);
+
+    return {
+      columns: this.normalizeWorksheetColumns(this.pickValue(source, ['columns'])),
+      detectedMapping: this.normalizeOrderImportColumnMapping(
+        this.pickValue(source, ['detectedMapping', 'detected_mapping'])
+      ),
+      fileType:
+        this.pickString(source, ['fileType', 'file_type']) === 'pdf'
+          ? 'pdf'
+          : 'spreadsheet',
+      headerRowIndex: this.pickNumber(source, ['headerRowIndex', 'header_row_index']),
+      itemsCount: this.pickNumber(source, ['itemsCount', 'items_count']) ?? 0,
+      previewItems: this.normalizeItems(this.pickValue(source, ['previewItems', 'preview_items'])),
+      requiresMapping: this.pickBoolean(source, ['requiresMapping', 'requires_mapping']) ?? true
+    };
+  }
+
+  private normalizeImportOrderFileResponse(payload: unknown): ImportOrderFileResponse {
+    const source = this.unwrap(payload);
+
+    return {
+      importedItems: this.pickNumber(source, ['importedItems', 'imported_items']) ?? 0,
+      itemsPreview: this.normalizeItems(
+        this.pickValue(source, ['itemsPreview', 'items_preview', 'previewItems'])
+      ),
+      status: 'completed'
     };
   }
 
@@ -394,6 +522,26 @@ export class OrdersService {
     });
   }
 
+  private normalizeSupplierUploadPreview(value: unknown): SupplierUploadResult['preview'] {
+    if (!this.isRecord(value)) {
+      return null;
+    }
+
+    return {
+      columns: this.normalizeWorksheetColumns(this.pickValue(value, ['columns'])),
+      detectedMapping: this.normalizeSupplierColumnMapping(
+        this.pickValue(value, ['detectedMapping', 'detected_mapping'])
+      ),
+      headerRowIndex: this.pickNumber(value, ['headerRowIndex', 'header_row_index']),
+      importedProductsCount:
+        this.pickNumber(value, ['importedProductsCount', 'imported_products_count']) ?? 0,
+      previewRow: this.normalizeSupplierPreviewRow(this.pickValue(value, ['previewRow', 'preview_row'])),
+      savedMapping: this.normalizeSupplierColumnMapping(
+        this.pickValue(value, ['savedMapping', 'saved_mapping'])
+      )
+    };
+  }
+
   private normalizeSupplierComparisonRows(value: unknown): SupplierComparisonRow[] {
     return this.asArray(value).flatMap((entry): SupplierComparisonRow[] => {
       if (!this.isRecord(entry)) {
@@ -486,25 +634,241 @@ export class OrdersService {
   }
 
   private normalizeSuppliers(value: unknown): SupplierDefinition[] {
+    const singleSupplier = this.normalizeSupplierDefinition(value);
+
+    if (singleSupplier) {
+      return [singleSupplier];
+    }
+
     const seen = new Set<string>();
 
     return this.asArray(value).flatMap((entry): SupplierDefinition[] => {
+      const supplier = this.normalizeSupplierDefinition(entry);
+
+      if (!supplier || seen.has(supplier.id)) {
+        return [];
+      }
+
+      seen.add(supplier.id);
+
+      return [supplier];
+    });
+  }
+
+  private normalizeSupplierDefinition(value: unknown): SupplierDefinition | null {
+    if (!this.isRecord(value)) {
+      return null;
+    }
+
+    const source = this.unwrap(value);
+    const candidate =
+      this.isRecord(this.pickValue(source, ['supplier', 'item', 'data']))
+        ? this.unwrap(this.pickValue(source, ['supplier', 'item', 'data']))
+        : source;
+    const id = this.pickString(candidate, ['id', 'supplierId', 'supplier_id', 'code']);
+    const name =
+      this.pickString(candidate, ['name', 'supplierName', 'supplier_name', 'description']) ?? id;
+
+    if (!id || !name) {
+      return null;
+    }
+
+    return {
+      id,
+      name,
+      code: this.pickString(candidate, ['code']),
+      active: this.pickBoolean(candidate, ['active']) ?? true,
+      latestUpload: this.normalizeSupplierLatestUpload(
+        this.pickValue(candidate, ['latestUpload', 'latest_upload', 'upload'])
+      ),
+      slug: this.pickString(candidate, ['slug'])
+    };
+  }
+
+  private normalizeSupplierLatestUpload(value: unknown): SupplierDefinition['latestUpload'] {
+    if (!this.isRecord(value)) {
+      return null;
+    }
+
+    const originalFileName = this.pickString(value, [
+      'originalFileName',
+      'original_file_name',
+      'fileName',
+      'filename',
+      'name'
+    ]);
+
+    if (!originalFileName) {
+      return null;
+    }
+
+    return {
+      extension: this.pickString(value, ['extension']) ?? null,
+      originalFileName,
+      storedPath: this.pickString(value, ['storedPath', 'stored_path']) ?? null,
+      uploadedAt:
+        this.pickString(value, ['uploadedAt', 'uploaded_at', 'createdAt', 'created_at']) ?? null
+    };
+  }
+
+  private normalizeSupplierUploadsFromSuppliers(
+    suppliers: SupplierDefinition[]
+  ): Record<string, SupplierUploadResult[]> {
+    return suppliers.reduce<Record<string, SupplierUploadResult[]>>((accumulator, supplier) => {
+      if (!supplier.latestUpload) {
+        return accumulator;
+      }
+
+      accumulator[supplier.id] = [
+        {
+          supplierId: supplier.id,
+          fileName: supplier.latestUpload.originalFileName,
+          uploadedAt: supplier.latestUpload.uploadedAt,
+          extension: supplier.latestUpload.extension ?? null,
+          storedPath: supplier.latestUpload.storedPath ?? null,
+          message: 'Ultimo listino salvato',
+          preview: null,
+          files: [],
+          products: []
+        }
+      ];
+
+      return accumulator;
+    }, {});
+  }
+
+  private normalizeWorksheetColumns(value: unknown): OrderFilePreviewResult['columns'] {
+    return this.asArray(value).flatMap((entry) => {
       if (!this.isRecord(entry)) {
         return [];
       }
 
-      const id = this.pickString(entry, ['id', 'supplierId', 'supplier_id', 'code']);
-      const name =
-        this.pickString(entry, ['name', 'supplierName', 'supplier_name', 'description']) ?? id;
+      const columnIndex = this.pickNumber(entry, ['columnIndex', 'column_index']);
+      const columnLetter = this.pickString(entry, ['columnLetter', 'column_letter']);
 
-      if (!id || !name || seen.has(id)) {
+      if (columnIndex === null || !columnLetter) {
         return [];
       }
 
-      seen.add(id);
-
-      return [{ id, name }];
+      return [
+        {
+          columnIndex,
+          columnLetter,
+          label: this.pickString(entry, ['label']) ?? ''
+        }
+      ];
     });
+  }
+
+  private normalizeOrderImportColumnMapping(value: unknown): OrderImportColumnMapping | null {
+    if (!this.isRecord(value)) {
+      return null;
+    }
+
+    const headerRowIndex = this.pickNumber(value, ['headerRowIndex', 'header_row_index']);
+    const eanColumnIndex = this.pickNumber(value, ['eanColumnIndex', 'ean_column_index']);
+    const quantityColumnIndex = this.pickNumber(value, [
+      'quantityColumnIndex',
+      'quantity_column_index'
+    ]);
+
+    if (headerRowIndex === null || eanColumnIndex === null || quantityColumnIndex === null) {
+      return null;
+    }
+
+    return {
+      headerRowIndex,
+      eanColumnIndex,
+      descriptionColumnIndex: this.pickNumber(value, [
+        'descriptionColumnIndex',
+        'description_column_index'
+      ]),
+      quantityColumnIndex
+    };
+  }
+
+  private normalizeSupplierColumnMapping(value: unknown): SupplierColumnMapping | null {
+    if (!this.isRecord(value)) {
+      return null;
+    }
+
+    const headerRowIndex = this.pickNumber(value, ['headerRowIndex', 'header_row_index']);
+    const eanColumnIndex = this.pickNumber(value, ['eanColumnIndex', 'ean_column_index']);
+    const descriptionColumnIndex = this.pickNumber(value, [
+      'descriptionColumnIndex',
+      'description_column_index'
+    ]);
+    const netPriceColumnIndex = this.pickNumber(value, [
+      'netPriceColumnIndex',
+      'net_price_column_index'
+    ]);
+
+    if (
+      headerRowIndex === null ||
+      eanColumnIndex === null ||
+      descriptionColumnIndex === null ||
+      netPriceColumnIndex === null
+    ) {
+      return null;
+    }
+
+    return {
+      supplierId:
+        this.pickString(value, ['supplierId', 'supplier_id']) ??
+        '',
+      headerRowIndex,
+      eanColumnIndex,
+      descriptionColumnIndex,
+      packageSizeColumnIndex: this.pickNumber(value, [
+        'packageSizeColumnIndex',
+        'package_size_column_index'
+      ]),
+      netPriceColumnIndex,
+      grossPriceColumnIndex: this.pickNumber(value, [
+        'grossPriceColumnIndex',
+        'gross_price_column_index'
+      ]),
+      availabilityColumnIndex: this.pickNumber(value, [
+        'availabilityColumnIndex',
+        'availability_column_index'
+      ]),
+      orderQuantityColumnIndex: this.pickNumber(value, [
+        'orderQuantityColumnIndex',
+        'order_quantity_column_index'
+      ])
+    };
+  }
+
+  private normalizeSupplierPreviewRow(
+    value: unknown
+  ): SupplierUploadPreview['previewRow'] {
+    if (!this.isRecord(value)) {
+      return null;
+    }
+
+    const ean = this.pickString(value, ['ean']);
+    const description = this.pickString(value, ['description', 'descrizione']);
+    const packageSize = this.pickNumber(value, ['packageSize', 'package_size']);
+    const netPrice = this.pickNumber(value, ['netPrice', 'net_price']);
+    const grossPrice = this.pickNumber(value, ['grossPrice', 'gross_price']);
+
+    if (
+      !ean ||
+      !description ||
+      packageSize === null ||
+      netPrice === null ||
+      grossPrice === null
+    ) {
+      return null;
+    }
+
+    return {
+      ean,
+      description,
+      packageSize,
+      netPrice,
+      grossPrice
+    };
   }
 
   private normalizeStringArray(value: unknown): string[] {
